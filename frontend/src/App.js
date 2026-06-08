@@ -43,7 +43,7 @@ export default function App() {
         setTimeout(() => setUploadStage("generating"), 1600)
       );
 
-      const res = await axios.post("http://localhost:5000/upload", formData);
+      const res = await axios.post("https://studyscribe.onrender.com/upload", formData);
       const result = res.data;
 
       setData(result);
@@ -98,7 +98,7 @@ export default function App() {
     setLoadingMoreQuestions(true);
     try {
       const response = await axios.post(
-        "http://localhost:5000/generate-more-questions",
+        "https://studyscribe.onrender.com/generate-more-questions",
         {
           text:
             data.originalText ||
@@ -230,7 +230,7 @@ export default function App() {
                 {data?.audio ? (
                   <audio
                     controls
-                    src={`http://localhost:5000${data.audio}`}
+                    src={`https://studyscribe.onrender.com${data.audio}`}
                     style={{ marginTop: "15px", width: "100%" }}
                   />
                 ) : (

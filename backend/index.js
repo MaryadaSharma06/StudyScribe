@@ -18,6 +18,46 @@ app.use(express.json());
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const hf = new HfInference(process.env.HF_API_KEY);
 
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const hf = new HfInference(process.env.HF_API_KEY);
+
+// ADD IT HERE 👇
+
+app.get("/test-groq", async (req, res) => {
+  try {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "user",
+          content: "Say hello"
+        }
+      ]
+    });
+
+    res.json(response.choices[0].message);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: err.message,
+      details: err
+    });
+  }
+});
+
+// Existing routes
+app.get("/", (req, res) => {
+  res.send("Backend working ✅");
+});
+
+app.post("/upload", upload.single("file"), async (req, res) => {
+  ...
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 /* ---------- SAFE PARSE ---------- */

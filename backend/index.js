@@ -18,9 +18,6 @@ app.use(express.json());
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const hf = new HfInference(process.env.HF_API_KEY);
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const hf = new HfInference(process.env.HF_API_KEY);
-
 // ADD IT HERE 👇
 
 app.get("/test-groq", async (req, res) => {

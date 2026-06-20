@@ -42,10 +42,6 @@ app.get("/test-groq", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 /* ---------- SAFE PARSE ---------- */

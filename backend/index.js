@@ -42,15 +42,6 @@ app.get("/test-groq", async (req, res) => {
   }
 });
 
-// Existing routes
-app.get("/", (req, res) => {
-  res.send("Backend working ✅");
-});
-
-app.post("/upload", upload.single("file"), async (req, res) => {
-  ...
-});
-
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

@@ -22,11 +22,12 @@ const practise = (list) => list.slice(0, MAX_CONCEPTS).map((c) => ({ name: c.nam
   `setConcepts` are the concept names in the open study set.
   `mastery` is conceptMastery() over all of the student's answers.
   `hasQuiz` says whether the study set has quiz questions.
+  `revision` is revisionSchedule() (lib/revision.js): which concepts are due for review.
 
   Returns up to three steps, best first:
   [{ action: "explain" | "practice" | "quiz", title, reason, concepts: [{ name, difficulty }] }]
 */
-function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true }) {
+function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true, revision = [] }) {
   const known = new Map(mastery.map((entry) => [entry.name.trim().toLowerCase(), entry]));
 
   // Each concept in this set with what is known about it. Concepts never answered have no level.
@@ -42,6 +43,10 @@ function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true }) {
   const learning = at("learning");
   const mastered = at("mastered");
   const untested = concepts.filter((c) => c.level === null);
+
+  // Concepts in this set that are due for spaced review and are not already weak
+  const dueKeys = new Set(revision.filter((entry) => entry.due).map((entry) => entry.name.trim().toLowerCase()));
+  const due = concepts.filter((c) => c.level && c.level !== "weak" && dueKeys.has(c.name.toLowerCase())).sort(byMastery);
 
   const steps = [];
 
@@ -66,7 +71,17 @@ function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true }) {
     });
   }
 
-  // 3. Much of the set has never been tested, so its mastery is unknown
+  // 3. Concepts due for spaced review, so they are not forgotten
+  if (due.length > 0) {
+    steps.push({
+      action: "practice",
+      title: "Revise what is due today",
+      reason: `${names(due.slice(0, MAX_CONCEPTS))} ${due.length === 1 ? "is" : "are"} due for review. Reviewing just before you would forget makes it stick for longer.`,
+      concepts: practise(due),
+    });
+  }
+
+  // 4. Much of the set has never been tested, so its mastery is unknown
   if (hasQuiz && untested.length > 0 && untested.length >= Math.ceil(concepts.length * UNTESTED_SHARE)) {
     steps.push({
       action: "quiz",
@@ -78,8 +93,8 @@ function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true }) {
     });
   }
 
-  // 4. Concepts still being learned, or with too few answers to judge
-  const unsure = [...learning, ...fresh].sort(byMastery);
+  // 5. Concepts still being learned, or with too few answers to judge (unless already in the revision step)
+  const unsure = [...learning, ...fresh].filter((c) => !due.includes(c)).sort(byMastery);
   if (unsure.length > 0) {
     steps.push({
       action: "practice",
@@ -89,7 +104,7 @@ function nextSteps({ setConcepts = [], mastery = [], hasQuiz = true }) {
     });
   }
 
-  // 5. Everything tested is mastered: stretch with hard questions
+  // 6. Everything tested is mastered: stretch with hard questions
   if (steps.length === 0 && mastered.length > 0) {
     steps.push({
       action: "practice",

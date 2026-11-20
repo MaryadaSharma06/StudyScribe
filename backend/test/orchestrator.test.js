@@ -64,3 +64,16 @@ test("without a concept map, only the quiz is suggested, and nothing when there 
   assert.deepStrictEqual(actions(nextSteps({ setConcepts: [], mastery: [] })), ["quiz"]);
   assert.deepStrictEqual(nextSteps({ setConcepts: [], mastery: [], hasQuiz: false }), []);
 });
+
+test("concepts due for review get a revision step; weak ones stay in weak practice", () => {
+  const steps = nextSteps({
+    setConcepts: ["A", "B", "C"],
+    mastery: [entry("A", 0.9, "mastered"), entry("B", 0.6, "learning"), entry("C", 0.4, "weak")],
+    revision: [{ name: "a", due: true }, { name: "B", due: false }, { name: "C", due: true }, { name: "Other", due: true }],
+  });
+  assert.deepStrictEqual(actions(steps), ["practice", "practice", "practice"]);
+  assert.strictEqual(steps[0].title, "Practise your weak concepts");
+  assert.strictEqual(steps[1].title, "Revise what is due today");
+  assert.deepStrictEqual(steps[1].concepts, [{ name: "A", difficulty: "hard" }]);
+  assert.deepStrictEqual(steps[2].concepts.map((c) => c.name), ["B"]);
+});

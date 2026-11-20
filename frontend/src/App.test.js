@@ -30,7 +30,7 @@ const bodiesSentTo = (path) => axios.post.mock.calls.filter(([url]) => url.endsW
 
 // Create React App resets every mock before each test, so the behaviour is set here
 beforeEach(() => {
-  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS }, '/study-sets': { data: { studySets: [] } }, '/next-steps': { data: { steps: [] } } };
+  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS }, '/study-sets': { data: { studySets: [] } }, '/next-steps': { data: { steps: [] } }, '/revision': { data: { due: [], upcoming: [] } } };
   localStorage.clear();
   axios.defaults = { headers: { common: {} } };
   axios.post.mockImplementation(respond);
@@ -376,4 +376,34 @@ test('the explain step asks the tutor to go over the concept again', async () =>
   expect(await screen.findByText('A deadlock is when processes wait for each other forever.')).toBeInTheDocument();
   expect(bodiesSentTo('/ask')).toHaveLength(1);
   expect(bodiesSentTo('/ask')[0]).toMatchObject({ docId: 'set-9', question: expect.stringContaining('"Deadlock"') });
+});
+
+test('revision lists due concepts and Revise opens their study set with a practice round', async () => {
+  routes['/revision'] = {
+    data: {
+      due: [
+        { setId: 'set-5', fileName: 'networks.pdf', available: true, concepts: [{ name: 'TCP handshake', box: 2, dueAt: '2026-11-19T10:00:00Z', difficulty: 'hard' }] },
+        { setId: 'gone', fileName: 'old.pdf', available: false, concepts: [{ name: 'Old idea', box: 1, dueAt: '2026-11-18T10:00:00Z', difficulty: 'medium' }] },
+      ],
+      upcoming: [{ name: 'Paging', dueAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), box: 3 }],
+    },
+  };
+  routes['/study-sets/set-5'] = {
+    data: { docId: 'set-5', fileName: 'networks.pdf', summary: 'S', notes: [], flashcards: [], quiz: [], knowledge: null, warnings: [], audio: null },
+  };
+  routes['/practice-concepts'] = {
+    data: { questions: [{ q: 'What is the first packet of a TCP handshake?', options: ['SYN', 'ACK'], answer: 'SYN', difficulty: 'hard', concept: 'TCP handshake', explanation: '' }], concepts: ['TCP handshake'] },
+  };
+  await renderSignedIn();
+
+  expect(await screen.findByText('Due for revision')).toBeInTheDocument();
+  expect(screen.getByText(/this study set is no longer saved/)).toBeInTheDocument();
+  expect(screen.getByText(/Paging in 3 days/)).toBeInTheDocument();
+  // Only the set that still exists can be revised
+  expect(screen.getAllByRole('button', { name: 'Revise' })).toHaveLength(1);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Revise' }));
+
+  expect(await screen.findByText(/What is the first packet of a TCP handshake\?/)).toBeInTheDocument();
+  expect(bodiesSentTo('/practice-concepts')[0]).toMatchObject({ docId: 'set-5', concepts: [{ name: 'TCP handshake', difficulty: 'hard' }] });
 });

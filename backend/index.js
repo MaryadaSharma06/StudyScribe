@@ -17,10 +17,11 @@ const { saveDocument, getDocument, forgetDocument } = require("./lib/store");
 const { answerQuestion, LEVELS } = require("./lib/tutor");
 const {
   userFromToken, saveAttempt, recentAttempts, answerHistory,
-  saveStudySet, listStudySets, getStudySet, studySetPieces, deleteStudySet,
+  saveStudySet, listStudySets, getStudySet, studySetPieces, existingStudySetIds, deleteStudySet,
 } = require("./lib/db");
 const { conceptMastery } = require("./lib/mastery");
-const { nextSteps } = require("./lib/orchestrator");
+const { nextSteps, DIFFICULTY_FOR } = require("./lib/orchestrator");
+const { revisionSchedule } = require("./lib/revision");
 
 /* ---------- CONFIG ---------- */
 const MAX_FILE_MB = 25;
@@ -489,11 +490,51 @@ app.post("/next-steps", requireUser, async (req, res) => {
       .filter(Boolean)
       .slice(0, 100);
 
-    const mastery = conceptMastery(await answerHistory(req.user.id));
-    res.json({ steps: nextSteps({ setConcepts, mastery, hasQuiz: req.body.hasQuiz !== false }) });
+    const answers = await answerHistory(req.user.id);
+    res.json({
+      steps: nextSteps({
+        setConcepts,
+        mastery: conceptMastery(answers),
+        revision: revisionSchedule(answers),
+        hasQuiz: req.body.hasQuiz !== false,
+      }),
+    });
 
   } catch (error) {
     sendError(res, error, "Your next steps could not be worked out.");
+  }
+});
+
+/* ---------- SPACED REVISION (Phase 7) ---------- */
+
+/*
+  Concepts due for review, grouped by the study set they were last practised in,
+  so each group can be revised with that file's material. Also the next few coming up.
+*/
+app.get("/revision", requireUser, async (req, res) => {
+  try {
+    const answers = await answerHistory(req.user.id);
+    const schedule = revisionSchedule(answers);
+    const levels = new Map(conceptMastery(answers).map((c) => [c.name.toLowerCase(), c.level]));
+    const due = schedule.filter((entry) => entry.due);
+    const available = await existingStudySetIds(req.user.id, due.map((entry) => entry.docId));
+
+    const groups = new Map();
+    for (const entry of due) {
+      const key = entry.docId || "none";
+      const group = groups.get(key) || { setId: entry.docId, fileName: entry.fileName, available: available.has(entry.docId), concepts: [] };
+      const level = levels.get(entry.name.toLowerCase()) || "new";
+      group.concepts.push({ name: entry.name, box: entry.box, dueAt: entry.dueAt, difficulty: DIFFICULTY_FOR[level] });
+      groups.set(key, group);
+    }
+
+    res.json({
+      due: [...groups.values()],
+      upcoming: schedule.filter((entry) => !entry.due).slice(0, 5).map(({ name, dueAt, box }) => ({ name, dueAt, box })),
+    });
+
+  } catch (error) {
+    sendError(res, error, "Your revision plan could not be loaded.");
   }
 });
 

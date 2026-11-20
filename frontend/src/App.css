@@ -213,3 +213,13 @@
 .next-step.main-step strong { font-size:18px; letter-spacing:-.02em; }
 .next-step.main-step + .next-step { margin-top:10px; border-top:0; }
 @media (max-width:760px) { .next-step { flex-direction:column; align-items:stretch; } }
+
+/* Spaced revision (Phase 7) */
+.revision-panel { border-top:3px solid #3d9b70; }
+.revision-group { display:flex; align-items:center; gap:16px; padding:13px 16px; margin-bottom:8px; background:#e8f4ee; }
+.revision-group > div { display:grid; flex:1; min-width:0; gap:3px; }
+.revision-group strong { font-size:15px; }
+.revision-group span { color:var(--muted); font-size:12px; }
+.revision-group .app-button { flex-shrink:0; padding:9px 18px; font-size:13px; }
+.revision-upcoming { margin:12px 0 0; color:var(--muted); font-size:13px; line-height:1.6; }
+@media (max-width:760px) { .revision-group { flex-direction:column; align-items:stretch; } }

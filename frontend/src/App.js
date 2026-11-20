@@ -57,6 +57,13 @@ const MASTERY_LABELS ={ new: "Not enough answers yet", weak: "Weak", learning: "
 
 const formatDate = (iso) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
+// "today", "tomorrow" or "in 5 days"
+function dueIn(iso) {
+  const days = Math.ceil((new Date(iso) - Date.now()) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "today";
+  return days === 1 ? "tomorrow" : `in ${days} days`;
+}
+
 // Which study set to reopen after a refresh. Only a convenience for this browser, so failures are ignored.
 const lastSetKey = (userId) => `studyscribe.lastSet.${userId}`;
 function readLastSet(userId) {
@@ -87,6 +94,7 @@ export default function App() {
   const [steps, setSteps] = useState([]);           // recommended next actions for the open set, best first
   const [practiceRequest, setPracticeRequest] = useState(null);
   const [tutorRequest, setTutorRequest] = useState(null);
+  const [revision, setRevision] = useState(null);   // { due: [groups by study set], upcoming }
 
   const [errorMessage, setErrorMessage] = useState(null);
   const [session, setSession] = useState(undefined);   // undefined while checking, null when signed out
@@ -105,6 +113,7 @@ export default function App() {
         setData({});
         setProgress(null);
         setStudySets([]);
+        setRevision(null);
         setView("dashboard");
       }
       setSession(next);
@@ -172,6 +181,28 @@ export default function App() {
       .catch(() => current && setSteps([]));
     return () => { current = false; };
   }, [userId, data.docId, data.knowledge, data.quiz, progress]);
+
+  // The revision plan changes whenever a quiz is saved
+  useEffect(() => {
+    if (!userId) return;
+    let current = true;
+    axios
+      .get(`${API_URL}/revision`)
+      .then((res) => current && setRevision(res.data))
+      .catch(() => current && setRevision(null));
+    return () => { current = false; };
+  }, [userId, progress]);
+
+  // Opens the study set the concepts came from, then starts a practice round on them
+  const startRevision = async (group) => {
+    if (data.docId !== group.setId && !(await openStudySet(group.setId, { nextView: "quiz" }))) return;
+    setPracticeRequest({
+      id: Date.now(),
+      docId: group.setId,
+      concepts: group.concepts.slice(0, 3).map(({ name, difficulty }) => ({ name, difficulty })),
+    });
+    setView("quiz");
+  };
 
   // Carries out a next step: each action opens the tool that does it
   const takeStep = (step) => {
@@ -287,6 +318,8 @@ export default function App() {
   const attempts = progress?.attempts || [];
   const concepts = progress?.concepts || [];
   const focusNext = concepts.filter((concept) => concept.level === "weak").slice(0, 5);
+  const dueGroups = revision?.due || [];
+  const upcoming = revision?.upcoming || [];
 
   // Shown first on the dashboard before any upload, and last once a study set exists
   const uploadBox = (
@@ -406,6 +439,30 @@ export default function App() {
                     <button className="app-button secondary-button" onClick={() => takeStep(step)}>{STEP_BUTTONS[step.action]}</button>
                   </div>
                 ))}
+              </section>
+            )}
+
+            {(dueGroups.length > 0 || upcoming.length > 0) && (
+              <section className="panel revision-panel">
+                <div className="panel-head">
+                  <div><span className="section-kicker">Spaced revision</span><h2>{dueGroups.length > 0 ? "Due for revision" : "Nothing due today"}</h2></div>
+                  <span className="result-count">Reviews spread out over days</span>
+                </div>
+                {dueGroups.length > 0 && <p className="mastery-note">Each concept comes back after 1, 3, 7, 16 and then 35 days while you keep getting it right, and tomorrow again if you get it wrong.</p>}
+                {dueGroups.map((group) => (
+                  <div key={group.setId || "none"} className="revision-group">
+                    <div>
+                      <strong>{group.concepts.slice(0, 3).map((c) => c.name).join(", ")}{group.concepts.length > 3 && ` and ${group.concepts.length - 3} more`}</strong>
+                      <span>{group.fileName || "Unknown file"}{!group.available && " · this study set is no longer saved"}</span>
+                    </div>
+                    {group.available && <button className="app-button primary-button" onClick={() => startRevision(group)}>Revise</button>}
+                  </div>
+                ))}
+                {upcoming.length > 0 && (
+                  <p className="revision-upcoming">
+                    <b>Coming up:</b> {upcoming.map((item) => `${item.name} ${dueIn(item.dueAt)}`).join(" · ")}
+                  </p>
+                )}
               </section>
             )}
 

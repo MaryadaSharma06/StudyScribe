@@ -2,7 +2,7 @@
 
 This document explains how StudyScribe works today, in plain language. It describes the code as it actually is, including its weak points, and is updated as each StudyScribe 2.0 phase is completed.
 
-Last updated: 20 November 2026, after Phase 6 (next-step recommendations from concept mastery).
+Last updated: 20 November 2026, after Phase 7 (spaced revision).
 
 ## 1. What the app does
 
@@ -86,11 +86,12 @@ Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres 
 | `backend/lib/db.js` | Supabase: `userFromToken()` checks who is signed in; saving and reading quiz results and study sets |
 | `backend/lib/mastery.js` | `conceptMastery()`: the student model, worked out from saved answers |
 | `backend/lib/orchestrator.js` | `nextSteps()`: picks the next best learning actions from mastery |
+| `backend/lib/revision.js` | `revisionSchedule()`: when each concept is due for review |
 | `backend/lib/quiz.js` | `cleanQuiz()` and `cleanFlashcards()`, which check AI-written questions and cards, plus the shared question format |
 | `backend/lib/assess.js` | `nextDifficulty()`, `weakConcepts()`, `analyzeMistakes()` and `practiceQuestions()` |
 | `backend/lib/ai.js` | `askGroq()`, the single place that calls the LLM, and `safeParse()` |
 | `backend/lib/errors.js` | `UserError`, for problems the student can fix |
-| `backend/test/` | 51 tests run with Node's built-in test runner (`npm test`) |
+| `backend/test/` | 59 tests run with Node's built-in test runner (`npm test`) |
 | `backend/package.json` | Backend libraries |
 | `backend/.env.example` | Template listing the keys the backend needs |
 | `backend/tmp_*.js` | Four leftover experiment scripts. Not used by the app. Three contain a hardcoded token (see section 7) |
@@ -101,7 +102,7 @@ Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres 
 | `frontend/src/Auth.js` | Sign-up and sign-in screen |
 | `frontend/src/App.css` | All styling |
 | `frontend/src/index.js` | Starts React |
-| `frontend/src/App.test.js` | Sixteen tests covering sign-in, the sign-in token, saved progress, saved study sets, next steps, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
+| `frontend/src/App.test.js` | Seventeen tests covering sign-in, the sign-in token, saved progress, saved study sets, next steps, revision, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
 | `frontend/.env.example` | Template for the Supabase values and the backend address |
 | `supabase/schema.sql` | The database tables and access rules. Run once in the Supabase SQL Editor |
 | `frontend/README.md` | The default Create React App readme |
@@ -270,15 +271,33 @@ When a study set is open, the dashboard asks `POST /next-steps` what to do next,
 | --- | --- | --- | --- |
 | 1 | A weak concept is below 30% | **Explain**: the tutor re-explains it from the file | |
 | 2 | Any concept is weak (below 45%) | **Practise** the weakest three | easy |
-| 3 | At least 30% of the set's concepts have never been answered | **Quiz**: test the rest of the set | |
-| 4 | Concepts are still learning, or have fewer than 3 answers | **Practise** the lowest three | medium |
-| 5 | Everything tested is mastered | **Challenge**: practise the mastered concepts | hard |
+| 3 | Concepts in this set are due for spaced review (and are not weak) | **Revise** them | by mastery |
+| 4 | At least 30% of the set's concepts have never been answered | **Quiz**: test the rest of the set | |
+| 5 | Concepts are still learning, or have fewer than 3 answers | **Practise** the lowest three | medium |
+| 6 | Everything tested is mastered | **Challenge**: practise the mastered concepts | hard |
 
 Up to three steps are shown, best first. Only concepts in the open set count, so mastery from other files does not change this set's advice. With no topic map, the step is simply to take the quiz.
 
 Each step has one button. **Explain** switches to the tutor and asks it to explain the concept again with an example from the material. **Practise** switches to the quiz and starts a practice round from `POST /practice-concepts`, which writes questions on exactly those concepts at the chosen level (reusing `practiceQuestions()` from Phase 4) and avoids repeating the set's quiz questions. **Quiz** opens the quiz.
 
 A practice round is saved like any quiz, which changes mastery, which changes the next step. That closes the loop: test, analyse, adapt, re-test. Requests carry the open set's id, so switching sets never replays an old request.
+
+### Spaced revision
+
+Mastery says how well a concept is known; revision says **when to look at it again** so it is not forgotten. `revisionSchedule()` in `lib/revision.js` works this out from the saved answers each time, like mastery, so there is no extra table to keep in sync.
+
+It uses boxes (the Leitner system):
+
+- All answers on one concept in one quiz are one **review**. It counts as right only if every answer on that concept was right.
+- A right review that was due (or up to 12 hours early) moves the concept up a box. The next review is then 1, 3, 7, 16 or 35 days later, for boxes 1 to 5.
+- A right review before it was due changes nothing, so answering the same concept many times in one evening does not push it weeks away.
+- A wrong review sends it back to box 0, due again the next day.
+
+`GET /revision` returns the due concepts grouped by the study set they were last practised in, because a practice round needs that file's text. It also says whether the set still exists (a deleted set cannot be revised) and lists the next few concepts coming up. On the dashboard, **Revise** opens that study set and starts a practice round on up to three due concepts, at the level that fits their mastery. The round is saved like any quiz, which moves the concepts to their next box.
+
+Due concepts in the open set also feed the next-step rules (priority 3 above), so the dashboard can say "Revise what is due today".
+
+Limits: the intervals are standard starting values, not tuned for each student. A concept answered in two files is scheduled once, under the file it was last practised in.
 
 ## 5. Technologies
 

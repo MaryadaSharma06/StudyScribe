@@ -24,6 +24,7 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 | Saved study sets | Every upload is saved to your account: summary, notes, topics, flashcards, quiz, and the text the tutor searches. The dashboard lists them to reopen or delete, and the last one you opened comes back after a refresh |
 | Saved progress | Every submitted quiz is saved to your account, with each answer. Results are still there after a refresh, a server restart, or on another device |
 | Next step | The dashboard recommends what to do next for the open study set, with the reason: re-explain a concept you keep missing, practise weak concepts on easy questions, finish testing untested concepts, strengthen ones you are still learning, or take on hard questions once everything is mastered. One click opens the tutor, a practice round or the quiz |
+| Spaced revision | Each concept you get right comes back for review after 1, 3, 7, 16 and then 35 days, and the next day if you get it wrong. The dashboard lists what is due, grouped by file, and "Revise" opens that file with a practice round on those concepts. Due concepts also become a next step |
 | Concept mastery | A score for each concept, worked out from all your saved answers. Recent answers count more, hard questions answered right count more, and a concept is only judged after three answers. Shown weakest first, with the weak ones listed under "Focus next" |
 
 ## Tech stack
@@ -50,6 +51,7 @@ StudyScribe/
 │   │   ├── db.js         Supabase: checks sign-in, saves and reads quiz results
 │   │   ├── mastery.js    Works out concept mastery from saved answers
 │   │   ├── orchestrator.js Picks the next best learning actions from mastery
+│   │   ├── revision.js   Works out when each concept is due for review
 │   │   ├── quiz.js       Checks and repairs AI-written questions and flashcards
 │   │   ├── assess.js     Adaptive difficulty, mistake analysis, practice questions
 │   │   ├── ai.js         The one function that calls the LLM, and JSON parsing
@@ -110,8 +112,8 @@ The app opens at http://localhost:3000.
 ### 4. Tests
 
 ```bash
-cd backend && npm test      # 51 tests, no API key or database needed
-cd frontend && npm test     # 16 tests
+cd backend && npm test      # 59 tests, no API key or database needed
+cd frontend && npm test     # 17 tests
 ```
 
 ## Environment variables
@@ -152,6 +154,7 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 | POST | `/attempts` | JSON `{ "docId", "fileName", "practice", "total", "answers" }`, answers as for `/analyze-mistakes` | The updated progress, as for `/progress` |
 | POST | `/next-steps` | JSON `{ "concepts", "hasQuiz" }`: the open set's concept names | `{ "steps": [{ "action", "title", "reason", "concepts": [{ "name", "difficulty" }] }] }`, best first. `action` is `explain`, `practice` or `quiz` |
 | POST | `/practice-concepts` | JSON `{ "docId", "concepts": [{ "name", "difficulty" }], "avoid" }` (at most 3 concepts) | `{ "questions", "concepts" }` |
+| GET | `/revision` | none | `{ "due": [{ "setId", "fileName", "available", "concepts": [{ "name", "box", "dueAt", "difficulty" }] }], "upcoming": [{ "name", "dueAt", "box" }] }` |
 | GET | `/study-sets` | none | `{ "studySets": [{ "id", "fileName", "createdAt" }] }`, newest first |
 | GET | `/study-sets/<id>` | none | A saved study set, in the same shape as the `/upload` response |
 | DELETE | `/study-sets/<id>` | none | `{ "deleted": true }`. Quiz results from the set are kept |
@@ -192,5 +195,5 @@ The goal is a closed learning loop:
 | 4 | Adaptive quizzes and mistake analysis | Done |
 | 5 | Student knowledge and performance model | Done: accounts, saved study sets, saved quiz results and concept mastery |
 | 6 | Orchestrator that picks the next best learning action | Done: rule-based next steps from mastery, carried out in one click |
-| 7 | Personalized, spaced revision | Planned |
+| 7 | Personalized, spaced revision | Done: per-concept review schedule from saved answers, revised in one click |
 | 8 | Evaluation workflow and final polish | Planned |

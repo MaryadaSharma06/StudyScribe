@@ -74,11 +74,11 @@ async function recentAttempts(userId, limit = 10) {
   }));
 }
 
-// The student's most recent answers, oldest first, in the form conceptMastery() expects.
+// The student's most recent answers, oldest first, in the form conceptMastery() and revisionSchedule() expect.
 async function answerHistory(userId) {
   const { data, error } = await db()
     .from("quiz_answers")
-    .select("concept, difficulty, is_correct, created_at")
+    .select("concept, difficulty, is_correct, created_at, attempt_id, quiz_attempts(doc_id, file_name)")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
@@ -90,6 +90,9 @@ async function answerHistory(userId) {
     difficulty: row.difficulty,
     correct: row.is_correct,
     at: row.created_at,
+    attemptId: row.attempt_id,
+    docId: row.quiz_attempts?.doc_id || null,
+    fileName: row.quiz_attempts?.file_name || "",
   }));
 }
 
@@ -170,6 +173,15 @@ async function studySetPieces(userId, id) {
   return data ? data.pieces : null;
 }
 
+// Which of these ids are study sets the student still has (some may have been deleted).
+async function existingStudySetIds(userId, ids) {
+  const valid = [...new Set(ids)].filter((id) => UUID.test(id || ""));
+  if (valid.length === 0) return new Set();
+  const { data, error } = await db().from("study_sets").select("id").eq("user_id", userId).in("id", valid);
+  if (error) throw error;
+  return new Set(data.map((row) => row.id));
+}
+
 // Returns true if a study set was deleted. Quiz results from it are kept.
 async function deleteStudySet(userId, id) {
   if (!UUID.test(id)) return false;
@@ -185,5 +197,5 @@ async function deleteStudySet(userId, id) {
 
 module.exports = {
   userFromToken, saveAttempt, recentAttempts, answerHistory,
-  saveStudySet, listStudySets, getStudySet, studySetPieces, deleteStudySet,
+  saveStudySet, listStudySets, getStudySet, studySetPieces, existingStudySetIds, deleteStudySet,
 };

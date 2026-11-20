@@ -14,7 +14,8 @@ const CAUSE_LABELS = {
 const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, "0")}`;
 
 // onResult is called once per submitted attempt, with the answers, so the result can be saved.
-export default function Quiz({ docId, initialQuestions, originalText, conceptNames, onResult }) {
+// practiceRequest ({ id, concepts }) starts a practice round chosen on the dashboard's next step.
+export default function Quiz({ docId, initialQuestions, originalText, conceptNames, onResult, practiceRequest }) {
   const [fullQuiz, setFullQuiz] = useState(initialQuestions);
   const [practice, setPractice] = useState(null);   // a practice round on weak concepts, or null
   const [answers, setAnswers] = useState({});
@@ -86,11 +87,11 @@ export default function Quiz({ docId, initialQuestions, originalText, conceptNam
     return () => clearTimeout(timer);
   }, [started, showScore, timeLeft]);
 
-  const practiseWeakConcepts = async () => {
+  const startPractice = async (route, body) => {
     setBusy("practice");
     setMessage(null);
     try {
-      const res = await axios.post(`${API_URL}/practice`, { docId, answers: answered() });
+      const res = await axios.post(`${API_URL}${route}`, body);
       setPractice(res.data.questions);
       startFresh();
     } catch (err) {
@@ -98,6 +99,23 @@ export default function Quiz({ docId, initialQuestions, originalText, conceptNam
     }
     setBusy(null);
   };
+
+  const practiseWeakConcepts = () => startPractice("/practice", { docId, answers: answered() });
+
+  // Each request id is handled once, even if React runs the effect twice
+  const startPracticeRef = useRef(startPractice);
+  startPracticeRef.current = startPractice;
+  const handledRequest = useRef(null);
+
+  useEffect(() => {
+    if (!practiceRequest || handledRequest.current === practiceRequest.id) return;
+    handledRequest.current = practiceRequest.id;
+    startPracticeRef.current("/practice-concepts", {
+      docId,
+      concepts: practiceRequest.concepts,
+      avoid: initialQuestions.map((q) => q.q),
+    });
+  }, [practiceRequest, docId, initialQuestions]);
 
   const loadMoreQuestions = async () => {
     setBusy("more");
@@ -122,6 +140,7 @@ export default function Quiz({ docId, initialQuestions, originalText, conceptNam
     startFresh();
   };
 
+  if (busy === "practice" && !showScore) return <p className="chat-thinking">Writing practice questions for you...</p>;
   if (questions.length === 0) return <p>No quiz questions are available for this file.</p>;
 
   const byDifficulty = ["easy", "medium", "hard"]

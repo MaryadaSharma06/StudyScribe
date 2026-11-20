@@ -30,7 +30,7 @@ const bodiesSentTo = (path) => axios.post.mock.calls.filter(([url]) => url.endsW
 
 // Create React App resets every mock before each test, so the behaviour is set here
 beforeEach(() => {
-  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS }, '/study-sets': { data: { studySets: [] } } };
+  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS }, '/study-sets': { data: { studySets: [] } }, '/next-steps': { data: { steps: [] } } };
   localStorage.clear();
   axios.defaults = { headers: { common: {} } };
   axios.post.mockImplementation(respond);
@@ -325,4 +325,55 @@ test('a new upload appears in the saved study sets', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
   expect(await screen.findByText('Your study sets')).toBeInTheDocument();
   expect(screen.getByText('Open now')).toBeInTheDocument();
+});
+
+// A saved study set with one concept and one question, opened from the dashboard
+const openSavedSet = async () => {
+  routes['/study-sets'] = { data: { studySets: [{ id: 'set-9', fileName: 'os.pdf', createdAt: '2026-11-20T10:00:00Z' }] } };
+  routes['/study-sets/set-9'] = {
+    data: {
+      docId: 'set-9', fileName: 'os.pdf', summary: 'S', notes: [], flashcards: [], warnings: [], audio: null,
+      knowledge: { topics: [{ name: 'Memory', subtopics: [], concepts: [{ name: 'Deadlock', definition: 'd', example: '', source: '' }] }], relationships: [], coverage: { percent: 100, sections: 1, firstSource: 'Page 1', lastSource: 'Page 1' } },
+      quiz: [{ q: 'Old question?', options: ['A', 'B'], answer: 'A', difficulty: 'easy', concept: 'Deadlock', explanation: '' }],
+    },
+  };
+  await renderSignedIn();
+  fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+  await screen.findByText('S');
+  fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+};
+
+test('the next step starts a practice round on the concepts it chose', async () => {
+  routes['/next-steps'] = {
+    data: { steps: [{ action: 'practice', title: 'Practise your weak concepts', reason: 'Deadlock is below 45% mastery.', concepts: [{ name: 'Deadlock', difficulty: 'easy' }] }] },
+  };
+  await openSavedSet();
+
+  expect(await screen.findByText('Practise your weak concepts')).toBeInTheDocument();
+  expect(bodiesSentTo('/next-steps')[0]).toEqual({ concepts: ['Deadlock'], hasQuiz: true });
+
+  routes['/practice-concepts'] = {
+    data: { questions: [{ q: 'What causes a deadlock?', options: ['A', 'B'], answer: 'A', difficulty: 'easy', concept: 'Deadlock', explanation: '' }], concepts: ['Deadlock'] },
+  };
+  fireEvent.click(screen.getByRole('button', { name: /start practice/i }));
+
+  expect(await screen.findByText(/What causes a deadlock\?/)).toBeInTheDocument();
+  expect(screen.getByText(/Practice round on your weak concepts/)).toBeInTheDocument();
+  expect(bodiesSentTo('/practice-concepts')).toEqual([
+    { docId: 'set-9', concepts: [{ name: 'Deadlock', difficulty: 'easy' }], avoid: ['Old question?'] },
+  ]);
+});
+
+test('the explain step asks the tutor to go over the concept again', async () => {
+  routes['/next-steps'] = {
+    data: { steps: [{ action: 'explain', title: 'Go over "Deadlock" again', reason: 'You got 0 of 4 right.', concepts: [{ name: 'Deadlock', difficulty: 'easy' }] }] },
+  };
+  await openSavedSet();
+
+  routes['/ask'] = { data: { answer: 'A deadlock is when processes wait for each other forever.', found: true, sources: [] } };
+  fireEvent.click(await screen.findByRole('button', { name: /explain it to me/i }));
+
+  expect(await screen.findByText('A deadlock is when processes wait for each other forever.')).toBeInTheDocument();
+  expect(bodiesSentTo('/ask')).toHaveLength(1);
+  expect(bodiesSentTo('/ask')[0]).toMatchObject({ docId: 'set-9', question: expect.stringContaining('"Deadlock"') });
 });

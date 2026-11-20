@@ -20,6 +20,7 @@ const {
   saveStudySet, listStudySets, getStudySet, studySetPieces, deleteStudySet,
 } = require("./lib/db");
 const { conceptMastery } = require("./lib/mastery");
+const { nextSteps } = require("./lib/orchestrator");
 
 /* ---------- CONFIG ---------- */
 const MAX_FILE_MB = 25;
@@ -412,6 +413,31 @@ app.post("/practice", requireUser, async (req, res) => {
   }
 });
 
+// Practice on concepts the orchestrator chose, at the difficulty it chose for each
+app.post("/practice-concepts", requireUser, async (req, res) => {
+  try {
+    const document = await findDocument(req.body?.docId, req.user.id);
+    if (!document) throw new UserError(MISSING_DOCUMENT, 404);
+
+    const concepts = (Array.isArray(req.body.concepts) ? req.body.concepts : []).slice(0, 3).flatMap((item) => {
+      const name = short(item?.name, 100);
+      return name ? [{ name, difficulty: DIFFICULTIES.includes(item.difficulty) ? item.difficulty : "medium" }] : [];
+    });
+    if (concepts.length === 0) throw new UserError("No concepts were chosen to practise.");
+
+    const avoid = (Array.isArray(req.body.avoid) ? req.body.avoid : []).map((q) => short(q, 500)).filter(Boolean).slice(0, 60);
+    const questions = await practiceQuestions(document.pieces, concepts, avoid);
+    if (questions.length === 0) {
+      throw new UserError("Practice questions could not be written for these concepts. Please try again.", 502);
+    }
+
+    res.json({ questions, concepts: [...new Set(questions.map((question) => question.concept))] });
+
+  } catch (error) {
+    sendError(res, error, "Practice questions could not be generated. Please try again.");
+  }
+});
+
 /* ---------- PROGRESS ---------- */
 
 // The student's recent attempts and how well they know each concept
@@ -450,6 +476,24 @@ app.get("/progress", requireUser, async (req, res) => {
     res.json(await progressFor(req.user.id));
   } catch (error) {
     sendError(res, error, "Your progress could not be loaded.");
+  }
+});
+
+/* ---------- NEXT STEPS (Phase 6) ---------- */
+
+// The next best learning actions for the open study set, from the student's mastery
+app.post("/next-steps", requireUser, async (req, res) => {
+  try {
+    const setConcepts = (Array.isArray(req.body?.concepts) ? req.body.concepts : [])
+      .map((name) => short(name, 100))
+      .filter(Boolean)
+      .slice(0, 100);
+
+    const mastery = conceptMastery(await answerHistory(req.user.id));
+    res.json({ steps: nextSteps({ setConcepts, mastery, hasQuiz: req.body.hasQuiz !== false }) });
+
+  } catch (error) {
+    sendError(res, error, "Your next steps could not be worked out.");
   }
 });
 

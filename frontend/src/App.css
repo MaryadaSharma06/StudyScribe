@@ -201,3 +201,15 @@
 .set-open-now { color:var(--coral-dark)!important; font-family:var(--mono); font-size:10px!important; letter-spacing:.07em; text-transform:uppercase; }
 .set-delete { width:30px; height:30px; flex-shrink:0; color:var(--muted); background:transparent; border:1px solid var(--line); font-size:18px; line-height:1; }
 .set-delete:hover { color:#9b3428; border-color:#efb7ad; background:#fce2dd; }
+
+/* Next step (Phase 6) */
+.next-steps { border-top:3px solid var(--coral); }
+.next-step { display:flex; align-items:center; gap:18px; padding:14px 0; border-top:1px solid var(--line); }
+.next-step > div { flex:1; min-width:0; }
+.next-step strong { display:block; font-size:15px; }
+.next-step p { margin:4px 0 0; color:var(--muted); font-size:13px; line-height:1.6; }
+.next-step .app-button { flex-shrink:0; padding:9px 16px; font-size:13px; }
+.next-step.main-step { padding:16px 18px; background:#fdf0ec; border:0; }
+.next-step.main-step strong { font-size:18px; letter-spacing:-.02em; }
+.next-step.main-step + .next-step { margin-top:10px; border-top:0; }
+@media (max-width:760px) { .next-step { flex-direction:column; align-items:stretch; } }

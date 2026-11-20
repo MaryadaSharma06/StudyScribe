@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import "./App.css";
 import Auth from "./Auth";
@@ -51,7 +51,9 @@ function RichText({ text }) {
   return paragraphs.map((paragraph, i) => <p key={i}>{withBold(paragraph)}</p>);
 }
 
-const MASTERY_LABELS = { new: "Not enough answers yet", weak: "Weak", learning: "Learning", mastered: "Mastered" };
+const STEP_BUTTONS = { explain: "Explain it to me", practice: "Start practice", quiz: "Open the quiz" };
+
+const MASTERY_LABELS ={ new: "Not enough answers yet", weak: "Weak", learning: "Learning", mastered: "Mastered" };
 
 const formatDate = (iso) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -82,6 +84,9 @@ export default function App() {
   const [data, setData] = useState({});
   const [progress, setProgress] = useState(null);   // saved attempts and concept mastery, from the backend
   const [studySets, setStudySets] = useState([]);   // the student's saved uploads, newest first
+  const [steps, setSteps] = useState([]);           // recommended next actions for the open set, best first
+  const [practiceRequest, setPracticeRequest] = useState(null);
+  const [tutorRequest, setTutorRequest] = useState(null);
 
   const [errorMessage, setErrorMessage] = useState(null);
   const [session, setSession] = useState(undefined);   // undefined while checking, null when signed out
@@ -155,6 +160,34 @@ export default function App() {
   useEffect(() => {
     if (userId && data.docId) writeLastSet(userId, data.docId);
   }, [userId, data.docId]);
+
+  // Next steps are worked out again whenever the open set or the saved progress changes
+  useEffect(() => {
+    if (!userId || !data.docId) return setSteps([]);
+    let current = true;
+    const concepts = (data.knowledge?.topics || []).flatMap((topic) => topic.concepts.map((c) => c.name));
+    axios
+      .post(`${API_URL}/next-steps`, { concepts, hasQuiz: (data.quiz || []).length > 0 })
+      .then((res) => current && setSteps(res.data.steps || []))
+      .catch(() => current && setSteps([]));
+    return () => { current = false; };
+  }, [userId, data.docId, data.knowledge, data.quiz, progress]);
+
+  // Carries out a next step: each action opens the tool that does it
+  const takeStep = (step) => {
+    // Tied to the open set, so switching sets never replays an old request
+    const id = Date.now();
+    const docId = data.docId;
+    if (step.action === "explain") {
+      setTutorRequest({ id, docId, text: `Explain "${step.concepts[0].name}" again in simple terms, with an example from my material.` });
+      setView("tutor");
+    } else if (step.action === "practice") {
+      setPracticeRequest({ id, docId, concepts: step.concepts });
+      setView("quiz");
+    } else {
+      setView("quiz");
+    }
+  };
 
   const removeStudySet = async (set) => {
     if (!window.confirm(`Delete "${set.fileName}"? Your quiz results from it are kept.`)) return;
@@ -349,6 +382,33 @@ export default function App() {
               </section>
             )}
 
+            {hasSet && steps.length > 0 && (
+              <section className="panel next-steps">
+                <div className="panel-head">
+                  <div><span className="section-kicker">Recommended for you</span><h2>Next step</h2></div>
+                  <span className="result-count">From your saved answers</span>
+                </div>
+                <div className="next-step main-step">
+                  <div>
+                    <strong>{steps[0].title}</strong>
+                    <p>{steps[0].reason}</p>
+                  </div>
+                  <button className="app-button primary-button" onClick={() => takeStep(steps[0])}>
+                    {STEP_BUTTONS[steps[0].action]} <span className="button-arrow">→</span>
+                  </button>
+                </div>
+                {steps.slice(1).map((step) => (
+                  <div key={step.title} className="next-step">
+                    <div>
+                      <strong>{step.title}</strong>
+                      <p>{step.reason}</p>
+                    </div>
+                    <button className="app-button secondary-button" onClick={() => takeStep(step)}>{STEP_BUTTONS[step.action]}</button>
+                  </div>
+                ))}
+              </section>
+            )}
+
             {studySets.length > 0 && (
               <section className="panel">
                 <div className="panel-head">
@@ -494,7 +554,9 @@ export default function App() {
             {/* TUTOR */}
             {/* Kept on the page but hidden in other views, so the conversation survives switching.
                 The key gives each uploaded document its own fresh conversation. */}
-            <div hidden={view !== "tutor"}><Tutor key={data?.docId} docId={data?.docId} /></div>
+            <div hidden={view !== "tutor"}>
+              <Tutor key={data?.docId} docId={data?.docId} request={tutorRequest?.docId === data.docId ? tutorRequest : null} />
+            </div>
 
             {/* FLASHCARDS */}
             {view === "flashcards" && (
@@ -515,6 +577,7 @@ export default function App() {
                 originalText={data?.originalText}
                 conceptNames={conceptNames}
                 onResult={saveAttempt}
+                practiceRequest={practiceRequest?.docId === data.docId ? practiceRequest : null}
               />
             </div>
           </div>
@@ -552,12 +615,22 @@ export default function App() {
 
 const FOLLOW_UPS = ["Explain that more simply", "Give me an example", "Give me an analogy"];
 
-function Tutor({ docId }) {
+// `request` ({ id, text }) asks a question chosen on the dashboard's next step
+function Tutor({ docId, request }) {
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [level, setLevel] = useState("simple");
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState(null);
+
+  // Each request id is asked once, even if React runs the effect twice
+  const askRef = useRef(null);
+  const handledRequest = useRef(null);
+  useEffect(() => {
+    if (!request || handledRequest.current === request.id) return;
+    handledRequest.current = request.id;
+    askRef.current(request.text);
+  }, [request]);
 
   const ask = async (text) => {
     const trimmed = text.trim();
@@ -577,6 +650,7 @@ function Tutor({ docId }) {
     }
     setAsking(false);
   };
+  askRef.current = ask;
 
   if (!docId) return <p>The tutor is not available for this study set. Please upload the file again.</p>;
 

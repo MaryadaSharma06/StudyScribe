@@ -23,6 +23,7 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 | Accounts | Real sign-up and sign-in with Supabase Auth. The backend checks who is calling before doing any AI work |
 | Saved study sets | Every upload is saved to your account: summary, notes, topics, flashcards, quiz, and the text the tutor searches. The dashboard lists them to reopen or delete, and the last one you opened comes back after a refresh |
 | Saved progress | Every submitted quiz is saved to your account, with each answer. Results are still there after a refresh, a server restart, or on another device |
+| Next step | The dashboard recommends what to do next for the open study set, with the reason: re-explain a concept you keep missing, practise weak concepts on easy questions, finish testing untested concepts, strengthen ones you are still learning, or take on hard questions once everything is mastered. One click opens the tutor, a practice round or the quiz |
 | Concept mastery | A score for each concept, worked out from all your saved answers. Recent answers count more, hard questions answered right count more, and a concept is only judged after three answers. Shown weakest first, with the weak ones listed under "Focus next" |
 
 ## Tech stack
@@ -48,6 +49,7 @@ StudyScribe/
 │   │   ├── store.js      Keeps recently used documents in server memory
 │   │   ├── db.js         Supabase: checks sign-in, saves and reads quiz results
 │   │   ├── mastery.js    Works out concept mastery from saved answers
+│   │   ├── orchestrator.js Picks the next best learning actions from mastery
 │   │   ├── quiz.js       Checks and repairs AI-written questions and flashcards
 │   │   ├── assess.js     Adaptive difficulty, mistake analysis, practice questions
 │   │   ├── ai.js         The one function that calls the LLM, and JSON parsing
@@ -108,8 +110,8 @@ The app opens at http://localhost:3000.
 ### 4. Tests
 
 ```bash
-cd backend && npm test      # 44 tests, no API key or database needed
-cd frontend && npm test     # 14 tests
+cd backend && npm test      # 51 tests, no API key or database needed
+cd frontend && npm test     # 16 tests
 ```
 
 ## Environment variables
@@ -148,6 +150,8 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 | POST | `/analyze-mistakes` | JSON `{ "docId", "answers" }`, where each answer has `index`, `q`, `options`, `answer`, `chosen`, `concept`, `difficulty` | `{ "analysis": [{ "index", "explanation", "category", "evidence", "source" }], "weakConcepts" }` |
 | POST | `/practice` | Same input as `/analyze-mistakes` | `{ "questions", "concepts" }` |
 | POST | `/attempts` | JSON `{ "docId", "fileName", "practice", "total", "answers" }`, answers as for `/analyze-mistakes` | The updated progress, as for `/progress` |
+| POST | `/next-steps` | JSON `{ "concepts", "hasQuiz" }`: the open set's concept names | `{ "steps": [{ "action", "title", "reason", "concepts": [{ "name", "difficulty" }] }] }`, best first. `action` is `explain`, `practice` or `quiz` |
+| POST | `/practice-concepts` | JSON `{ "docId", "concepts": [{ "name", "difficulty" }], "avoid" }` (at most 3 concepts) | `{ "questions", "concepts" }` |
 | GET | `/study-sets` | none | `{ "studySets": [{ "id", "fileName", "createdAt" }] }`, newest first |
 | GET | `/study-sets/<id>` | none | A saved study set, in the same shape as the `/upload` response |
 | DELETE | `/study-sets/<id>` | none | `{ "deleted": true }`. Quiz results from the set are kept |
@@ -168,7 +172,7 @@ These describe the code as it is now. Each is covered in more detail in [UNDERST
 - Audio summaries are files on the backend server, not in Supabase. On a host that wipes its disk on restart (such as Render's free plan) the audio of an older study set stops playing.
 - The tutor finds text by matching words, not meaning. A question that uses different words from the material (for example "memory juggling" for "thrashing") may not find the right passage.
 - Groq's free plan allows 8,000 tokens per minute per model. One upload uses most of that, so uploading several files in a row can hit "rate limit reached".
-- Concept mastery is shown on the dashboard, but the quiz does not use it yet: "More questions" and practice rounds still adapt to the current quiz only. (Phase 6)
+- The next-step rules are fixed thresholds chosen by hand (for example, re-explain below 30% mastery). They have not been tuned on real students. "More questions" in the quiz still adapts to the last score only.
 - Concepts are matched by name across files, so two files with a concept of the same name share one mastery score.
 - A mistake's "possible cause" is a guess from limited evidence. One wrong multiple-choice answer rarely shows why it was wrong, so most single mistakes are labelled "knowledge gap" or left without a cause. At most 8 mistakes are analysed per quiz.
 - Old `.ppt` and `.doc` files, images and scanned PDFs are not supported. Word files have no page numbers, so their concepts point to a heading instead.
@@ -187,6 +191,6 @@ The goal is a closed learning loop:
 | 3 | Grounded AI tutor using retrieval (RAG) over the uploaded material | Done |
 | 4 | Adaptive quizzes and mistake analysis | Done |
 | 5 | Student knowledge and performance model | Done: accounts, saved study sets, saved quiz results and concept mastery |
-| 6 | Orchestrator that picks the next best learning action | Planned |
+| 6 | Orchestrator that picks the next best learning action | Done: rule-based next steps from mastery, carried out in one click |
 | 7 | Personalized, spaced revision | Planned |
 | 8 | Evaluation workflow and final polish | Planned |

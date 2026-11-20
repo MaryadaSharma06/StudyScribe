@@ -2,7 +2,7 @@
 
 This document explains how StudyScribe works today, in plain language. It describes the code as it actually is, including its weak points, and is updated as each StudyScribe 2.0 phase is completed.
 
-Last updated: 20 November 2026, after Phase 5 (accounts, saved quiz results and concept mastery, using Supabase).
+Last updated: 20 November 2026, after Phase 6 (next-step recommendations from concept mastery).
 
 ## 1. What the app does
 
@@ -85,11 +85,12 @@ Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres 
 | `backend/lib/store.js` | `saveDocument()`, `getDocument()` and `forgetDocument()`: a memory cache of recently used documents and who owns them |
 | `backend/lib/db.js` | Supabase: `userFromToken()` checks who is signed in; saving and reading quiz results and study sets |
 | `backend/lib/mastery.js` | `conceptMastery()`: the student model, worked out from saved answers |
+| `backend/lib/orchestrator.js` | `nextSteps()`: picks the next best learning actions from mastery |
 | `backend/lib/quiz.js` | `cleanQuiz()` and `cleanFlashcards()`, which check AI-written questions and cards, plus the shared question format |
 | `backend/lib/assess.js` | `nextDifficulty()`, `weakConcepts()`, `analyzeMistakes()` and `practiceQuestions()` |
 | `backend/lib/ai.js` | `askGroq()`, the single place that calls the LLM, and `safeParse()` |
 | `backend/lib/errors.js` | `UserError`, for problems the student can fix |
-| `backend/test/` | 44 tests run with Node's built-in test runner (`npm test`) |
+| `backend/test/` | 51 tests run with Node's built-in test runner (`npm test`) |
 | `backend/package.json` | Backend libraries |
 | `backend/.env.example` | Template listing the keys the backend needs |
 | `backend/tmp_*.js` | Four leftover experiment scripts. Not used by the app. Three contain a hardcoded token (see section 7) |
@@ -100,7 +101,7 @@ Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres 
 | `frontend/src/Auth.js` | Sign-up and sign-in screen |
 | `frontend/src/App.css` | All styling |
 | `frontend/src/index.js` | Starts React |
-| `frontend/src/App.test.js` | Fourteen tests covering sign-in, the sign-in token, saved progress, saved study sets, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
+| `frontend/src/App.test.js` | Sixteen tests covering sign-in, the sign-in token, saved progress, saved study sets, next steps, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
 | `frontend/.env.example` | Template for the Supabase values and the backend address |
 | `supabase/schema.sql` | The database tables and access rules. Run once in the Supabase SQL Editor |
 | `frontend/README.md` | The default Create React App readme |
@@ -261,6 +262,24 @@ The database rules (Row Level Security in `supabase/schema.sql`) let a signed-in
 
 Levels: fewer than 3 answers is "not enough answers yet"; then 75% or more is mastered, 45% or more is learning, and below that is weak. For example, 3 right answers in a row give 78% (mastered), 3 wrong give 22% (weak), and right, wrong, right gives 60% (learning). The dashboard lists concepts weakest first, and the weak ones under "Focus next".
 
+### Next step (the orchestrator)
+
+When a study set is open, the dashboard asks `POST /next-steps` what to do next, sending the set's concept names. The server works out mastery from all saved answers and passes it to `nextSteps()` in `lib/orchestrator.js`. That is a fixed list of rules in priority order, not an AI call, so every recommendation comes with a reason and can be tested:
+
+| Priority | When | Step | Question level |
+| --- | --- | --- | --- |
+| 1 | A weak concept is below 30% | **Explain**: the tutor re-explains it from the file | |
+| 2 | Any concept is weak (below 45%) | **Practise** the weakest three | easy |
+| 3 | At least 30% of the set's concepts have never been answered | **Quiz**: test the rest of the set | |
+| 4 | Concepts are still learning, or have fewer than 3 answers | **Practise** the lowest three | medium |
+| 5 | Everything tested is mastered | **Challenge**: practise the mastered concepts | hard |
+
+Up to three steps are shown, best first. Only concepts in the open set count, so mastery from other files does not change this set's advice. With no topic map, the step is simply to take the quiz.
+
+Each step has one button. **Explain** switches to the tutor and asks it to explain the concept again with an example from the material. **Practise** switches to the quiz and starts a practice round from `POST /practice-concepts`, which writes questions on exactly those concepts at the chosen level (reusing `practiceQuestions()` from Phase 4) and avoids repeating the set's quiz questions. **Quiz** opens the quiz.
+
+A practice round is saved like any quiz, which changes mastery, which changes the next step. That closes the loop: test, analyse, adapt, re-test. Requests carry the open set's id, so switching sets never replays an old request.
+
 ## 5. Technologies
 
 | Technology | Used for | Actually used? |
@@ -323,7 +342,7 @@ The frontend reads the backend address from `REACT_APP_API_URL` and falls back t
 7. **The tutor searches by words, not meaning.** A question worded very differently from the material may not find the right passage. Its answers were checked by hand on one five-page test document, not measured on a question set.
 8. **Groq's free limit is 8,000 tokens per minute per model.** One upload uses most of that, so several uploads in a row can hit the rate limit.
 9. **A mistake's cause is a guess from limited evidence.** Most single mistakes come back as "knowledge gap", the model's default. The analysis was checked by hand on one test quiz, not measured against real students. At most 8 mistakes are analysed per quiz.
-10. **The quiz does not use mastery yet.** Mastery is saved and shown, but "More questions" and practice still adapt to the current quiz only. Choosing what to do next from mastery is Phase 6.
+10. **The next-step rules use hand-picked thresholds** (re-explain below 30%, weak below 45%, mastered from 75%, quiz when 30% of concepts are untested). They are reasonable starting points, not values tuned on real students. "More questions" in the quiz still adapts to the last score only.
 11. **Uploading is by the Browse button only.** The upload box no longer claims drag and drop works.
 12. **Concepts are matched by name, across files.** Two files that both have a concept called "Process" share one mastery score. Mastery reads the last 1,000 answers.
 

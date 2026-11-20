@@ -2,7 +2,7 @@
 
 This document explains how StudyScribe works today, in plain language. It describes the code as it actually is, including its weak points, and is updated as each StudyScribe 2.0 phase is completed.
 
-Last updated: 14 October 2026, after Phase 4 (adaptive assessment and mistake analysis).
+Last updated: 20 November 2026, after Phase 5 (accounts, saved quiz results and concept mastery, using Supabase).
 
 ## 1. What the app does
 
@@ -15,8 +15,9 @@ It is a one-shot generator. It does not remember the student, the file, or the q
 ```
 Browser (React)                      Server (Node + Express)                 Outside services
 ───────────────                      ───────────────────────                 ────────────────
-Auth.js   login screen
-          (browser storage only)
+Auth.js   sign-up / sign-in  ────────────────────────────────────────────► Supabase Auth
+          gives an access token; every request below sends it
+          and the server checks it with Supabase first
 
 App.js    choose a file  ──────────► POST /upload
                                        0. check file exists, size, type
@@ -53,6 +54,14 @@ App.js    choose a file  ──────────► POST /upload
 
           "Load more"    ──────────► POST /generate-more-questions ────────► Groq LLM
           questions      ◄────────── 10 more questions
+
+          Submit quiz    ──────────► POST /attempts ───────────────────────► Supabase database
+          (also)                       save the attempt and each answer       (quiz_attempts,
+                                       then work out concept mastery           quiz_answers)
+          dashboard      ◄────────── recent attempts + mastery per concept
+
+          Sign in        ──────────► GET /progress ────────────────────────► Supabase database
+          dashboard      ◄────────── the same, for a returning student
 ```
 
 There are two separate programs:
@@ -60,34 +69,38 @@ There are two separate programs:
 - **Frontend** in `frontend/`: a React single-page app made with Create React App.
 - **Backend** in `backend/`: one Express server. `index.js` holds the routes and `lib/` holds the logic.
 
-There is no database. Uploaded documents are held in the server's memory.
+Accounts and quiz results are stored in Supabase (a hosted Postgres database with sign-in built in). Uploaded documents and study sets are still held in the server's memory only.
 
 ## 3. Files
 
 | File | What it does |
 | --- | --- |
-| `backend/index.js` | Server setup, error responses, audio, input checks and the five routes |
+| `backend/index.js` | Server setup, the sign-in check, error responses, audio, input checks and the routes |
 | `backend/lib/extract.js` | Reads an uploaded file into sections, each with a source label |
 | `backend/lib/understand.js` | Splits text into pieces and batches, samples long documents, and builds the knowledge map |
 | `backend/lib/retrieve.js` | `search()`: ranks the pieces of a document against a question |
 | `backend/lib/tutor.js` | `answerQuestion()`: retrieve, ask the LLM, check the sources |
 | `backend/lib/store.js` | `saveDocument()` and `getDocument()`: documents kept in memory |
+| `backend/lib/db.js` | Supabase: `userFromToken()` checks who is signed in, `saveAttempt()`, `recentAttempts()` and `answerHistory()` |
+| `backend/lib/mastery.js` | `conceptMastery()`: the student model, worked out from saved answers |
 | `backend/lib/quiz.js` | `cleanQuiz()` and `cleanFlashcards()`, which check AI-written questions and cards, plus the shared question format |
 | `backend/lib/assess.js` | `nextDifficulty()`, `weakConcepts()`, `analyzeMistakes()` and `practiceQuestions()` |
 | `backend/lib/ai.js` | `askGroq()`, the single place that calls the LLM, and `safeParse()` |
 | `backend/lib/errors.js` | `UserError`, for problems the student can fix |
-| `backend/test/` | 36 tests run with Node's built-in test runner (`npm test`) |
+| `backend/test/` | 43 tests run with Node's built-in test runner (`npm test`) |
 | `backend/package.json` | Backend libraries |
 | `backend/.env.example` | Template listing the keys the backend needs |
 | `backend/tmp_*.js` | Four leftover experiment scripts. Not used by the app. Three contain a hardcoded token (see section 7) |
 | `frontend/src/App.js` | The page layout (sidebar and dashboard), upload box, progress popup, and the `Tutor`, `KnowledgeMap`, `RichText` and `FlipCard` components |
 | `frontend/src/Quiz.js` | The quiz: answering, timer, score, mistake review, practice rounds |
 | `frontend/src/config.js` | The backend address |
-| `frontend/src/Auth.js` | Sign-up and login screen |
+| `frontend/src/supabase.js` | The Supabase client, made from the URL and publishable key |
+| `frontend/src/Auth.js` | Sign-up and sign-in screen |
 | `frontend/src/App.css` | All styling |
 | `frontend/src/index.js` | Starts React |
-| `frontend/src/App.test.js` | Ten tests covering sign-in, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views |
-| `frontend/.env.example` | Template for the backend address the frontend should call |
+| `frontend/src/App.test.js` | Twelve tests covering sign-in, the sign-in token, saved progress, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
+| `frontend/.env.example` | Template for the Supabase values and the backend address |
+| `supabase/schema.sql` | The database tables and access rules. Run once in the Supabase SQL Editor |
 | `frontend/README.md` | The default Create React App readme |
 | `package.json` (root) | Lists five libraries the backend already lists. Not used by anything |
 
@@ -200,9 +213,9 @@ The screen is a sidebar plus a main area. The sidebar lists every view: **Dashbo
 The **dashboard** changes with the situation:
 
 - **Before any upload** it leads with the welcome banner and the upload box.
-- **After an upload** it leads with the current study set (number of concepts, notes, flashcards and questions, and how much of the file was analysed), then shortcuts to each tool, then this session's quiz results, with the upload box moved to the end.
+- **After an upload** it leads with the current study set (number of concepts, notes, flashcards and questions, and how much of the file was analysed), then shortcuts to each tool, then your saved progress, with the upload box moved to the end.
 
-Quiz results reach the dashboard through an `onResult` callback that `Quiz.js` calls after each submitted attempt. They are kept in React state only, so the dashboard labels them "Not saved yet".
+Saved progress (recent quiz results and concept mastery) shows in both cases, so a returning student sees it straight after signing in. See "Saved progress and concept mastery" below.
 
 The Tutor and Quiz views stay on the page, hidden, while you look at other views, so a conversation or a half-finished quiz is not lost.
 
@@ -212,7 +225,31 @@ On screens narrower than 860px the sidebar becomes a bar across the top with a h
 
 ### Authentication
 
-`Auth.js` saves `{ email, password }` in the browser's `localStorage` on sign-up, and compares against it on login. A `loggedIn` flag in `localStorage` decides whether to show the app. The backend is not involved at all.
+Accounts are handled by **Supabase Auth**. `Auth.js` calls `signUp()` or `signInWithPassword()`; passwords never touch our own code or storage. If email confirmation is on in Supabase, sign-up shows "check your email" and the student signs in after clicking the link.
+
+`App.js` asks Supabase for the current session when it starts, and listens for changes (sign-in, sign-out, and the automatic token refresh about once an hour). Whenever the session changes it puts the access token on every backend request as `Authorization: Bearer <token>`. Signing out clears the study set and progress from the screen, so the next person on the same computer does not see them.
+
+On the server, `requireUser` runs before every route that uses the AI or the database. It asks Supabase whether the token is real and current (`userFromToken()`), and answers 401 if not. This means the Groq quota can only be used by signed-in students.
+
+The two Supabase keys have different jobs:
+
+- The **publishable** key is in the frontend. It is public, and can only do what the database rules allow.
+- The **secret** key is only in `backend/.env`. It ignores the database rules, so every query in `db.js` filters by the signed-in student's id itself.
+
+### Saved progress and concept mastery
+
+When a quiz or practice round is submitted, `Quiz.js` calls `onResult` with the answers straight away (before the mistake analysis, so a slow analysis cannot lose the result). `App.js` sends them to `POST /attempts`. The server re-checks every answer, works out which are right itself, and saves one row in `quiz_attempts` and one row per answer in `quiz_answers`. Saving does not need the document, so it works even after the server restarted.
+
+The database rules (Row Level Security in `supabase/schema.sql`) let a signed-in student read only their own rows, and nobody can write except the backend.
+
+**Concept mastery** (`lib/mastery.js`) is the student model. It is worked out from the saved answers each time it is needed, rather than stored, so it can never disagree with the answers. For each concept, oldest answer first:
+
+- each answer adds a weight to the total, and to "right" if it was right
+- before each new answer, the earlier evidence is multiplied by 0.85, so recent answers count more
+- a right answer on a hard question weighs 1.3 and on an easy one 0.7; a wrong answer is the other way round (easy 1.3, hard 0.7), because missing an easy question says more than missing a hard one
+- mastery = (right + 1) / (total + 2). The +1 and +2 start every concept at 50% and stop one answer from jumping to 0% or 100%
+
+Levels: fewer than 3 answers is "not enough answers yet"; then 75% or more is mastered, 45% or more is learning, and below that is weak. For example, 3 right answers in a row give 78% (mastered), 3 wrong give 22% (weak), and right, wrong, right gives 60% (learning). The dashboard lists concepts weakest first, and the weak ones under "Focus next".
 
 ## 5. Technologies
 
@@ -224,12 +261,13 @@ On screens narrower than 860px the sidebar becomes a bar across the top with a h
 | groq-sdk | LLM calls and audio transcription | Yes |
 | gtts | Text-to-speech | Yes |
 | pdf-parse, officeparser | File parsing | Yes |
+| Supabase (`@supabase/supabase-js`) | Accounts, sign-in check, saved quiz results | Yes |
 
 ## 6. Deployment
 
 The original app is deployed with the frontend on Vercel (`https://study-scribe-xi.vercel.app`) and the backend on Render (`https://studyscribe.onrender.com`), both connected to the original repository this one was forked from.
 
-The frontend reads the backend address from `REACT_APP_API_URL` and falls back to the Render address when it is not set. A separate deployment needs its own Render service (with the backend variables) and its own Vercel project (with `REACT_APP_API_URL` pointing at that Render service).
+The frontend reads the backend address from `REACT_APP_API_URL` and falls back to the Render address when it is not set. A separate deployment needs its own Render service (with the backend variables, including the Supabase URL and secret key) and its own Vercel project (with `REACT_APP_API_URL` pointing at that Render service, plus the Supabase URL and publishable key). In Supabase, **Authentication → URL Configuration** should list the deployed frontend address so confirmation emails link back to it.
 
 ## 7. Audit findings
 
@@ -262,13 +300,12 @@ The frontend reads the backend address from `REACT_APP_API_URL` and falls back t
 
 1. **A Hugging Face token is hardcoded** in `backend/tmp_tts_lookup.js`, `tmp_tts_lookup2.js` and `tmp_tts_test.js` on the public `main` branch. The files are deleted on the `studyscribe-2.0` branch, but they stay readable in the Git history.
 2. **The first commit in the Git history contains `backend/.env`** with a Groq key and a Hugging Face key. A later commit removed the file, but old commits remain readable on a public repository. Both keys must be treated as leaked and replaced by their owner.
-3. **Login gives no real protection.** The password is stored as plain text in the browser, each browser has its own "account", and anyone can skip the screen by setting `loggedIn` in `localStorage`. Real accounts need a database, so this is planned with Phase 5.
-4. **The backend has no authentication and no rate limit**, so anyone with the URL can use up the Groq quota. `ALLOWED_ORIGINS` stops other websites, not direct requests.
+3. **There is no rate limit per student.** Since Phase 5 only signed-in students can call the AI routes, but one account can still make as many requests as it likes, and anyone can create an account.
 
 **Limitations**
 
 1. **Long documents are only partly analysed.** The topic map reads up to about 32,000 characters and reports its coverage. The summary, notes and quiz use a 6,000-character sample. Phase 3 retrieval lets the tutor use the whole file.
-2. **Nothing is saved permanently.** No users, no quiz history, and documents live only in server memory. (Phase 5)
+2. **Study sets are not saved.** Accounts and quiz results are saved, but the summary, notes, topics and the document the tutor uses live only in the browser and server memory. Refreshing loses the study set, and a server restart loses the tutor's copy.
 3. **The knowledge map has had one real-model check.** A two-page test lecture gave 5 topics and 18 concepts with correct page labels. Quality on long or messy documents has not been measured.
 4. **Four to nine AI calls run one after another** on each upload. Test uploads took 33 to 71 seconds, which is slow and can hit free-tier time limits on Render. The model's hidden reasoning counts towards the reply limit, so the knowledge map call uses a higher limit (6,000 tokens) than the others (3,000).
 5. **Audio files pile up** in `backend/uploads` and are never deleted. On Render's free tier they also disappear on restart.
@@ -276,8 +313,9 @@ The frontend reads the backend address from `REACT_APP_API_URL` and falls back t
 7. **The tutor searches by words, not meaning.** A question worded very differently from the material may not find the right passage. Its answers were checked by hand on one five-page test document, not measured on a question set.
 8. **Groq's free limit is 8,000 tokens per minute per model.** One upload uses most of that, so several uploads in a row can hit the rate limit.
 9. **A mistake's cause is a guess from limited evidence.** Most single mistakes come back as "knowledge gap", the model's default. The analysis was checked by hand on one test quiz, not measured against real students. At most 8 mistakes are analysed per quiz.
-10. **Adaptation only uses the current quiz**, because results are not stored yet. (Phase 5)
+10. **The quiz does not use mastery yet.** Mastery is saved and shown, but "More questions" and practice still adapt to the current quiz only. Choosing what to do next from mastery is Phase 6.
 11. **Uploading is by the Browse button only.** The upload box no longer claims drag and drop works.
+12. **Concepts are matched by name, across files.** Two files that both have a concept called "Process" share one mastery score. Mastery reads the last 1,000 answers.
 
 ## 8. What can be reused for StudyScribe 2.0
 

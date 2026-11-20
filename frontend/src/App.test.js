@@ -1,8 +1,54 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import axios from 'axios';
 import App from './App';
+import { supabase } from './supabase';
 
 jest.mock('axios');
+jest.mock('./supabase', () => ({
+  supabase: {
+    auth: {
+      getSession: jest.fn(),
+      onAuthStateChange: jest.fn(),
+      signInWithPassword: jest.fn(),
+      signUp: jest.fn(),
+      signOut: jest.fn(),
+    },
+  },
+}));
+
+const SESSION = { access_token: 'token-1', user: { id: 'user-1', email: 'student@example.com' } };
+const NO_PROGRESS = { attempts: [], concepts: [] };
+
+// Backend responses by path. A test replaces an entry before the request it expects.
+let routes;
+const respond = (url) => {
+  const path = Object.keys(routes).find((key) => url.endsWith(key));
+  if (!path) return Promise.reject(new Error(`No mock response for ${url}`));
+  return Promise.resolve(routes[path]);
+};
+const bodiesSentTo = (path) => axios.post.mock.calls.filter(([url]) => url.endsWith(path)).map(([, body]) => body);
+
+// Create React App resets every mock before each test, so the behaviour is set here
+beforeEach(() => {
+  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS } };
+  axios.defaults = { headers: { common: {} } };
+  axios.post.mockImplementation(respond);
+  axios.get.mockImplementation(respond);
+  supabase.auth.getSession.mockResolvedValue({ data: { session: SESSION } });
+  supabase.auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: jest.fn() } } });
+});
+
+// Renders the app as a signed-in student and waits for the dashboard
+const renderSignedIn = async () => {
+  const result = render(<App />);
+  await screen.findByText(/generate my study set/i);
+  return result;
+};
+
+const uploadFile = (name = 'lecture.pdf') => {
+  fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], name)] } });
+  fireEvent.click(screen.getByText(/generate my study set/i));
+};
 
 // Sidebar tools unlock once the upload has finished
 const openView = async (name) => {
@@ -11,30 +57,42 @@ const openView = async (name) => {
   fireEvent.click(button);
 };
 
-test('shows the sign-in screen when nobody is logged in', () => {
-  localStorage.clear();
+test('shows the sign-in screen when nobody is signed in', async () => {
+  supabase.auth.getSession.mockResolvedValue({ data: { session: null } });
   render(<App />);
-  expect(screen.getByText(/welcome back/i)).toBeInTheDocument();
+  expect(await screen.findByText(/welcome back/i)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
 });
 
-test('shows the upload screen after logging in', () => {
-  localStorage.setItem('loggedIn', 'true');
+test('signs in through Supabase and shows its error message', async () => {
+  supabase.auth.getSession.mockResolvedValue({ data: { session: null } });
+  supabase.auth.signInWithPassword.mockResolvedValue({ error: { message: 'Invalid login credentials' } });
   render(<App />);
-  expect(screen.getByText(/generate my study set/i)).toBeInTheDocument();
+
+  fireEvent.change(await screen.findByLabelText(/email address/i), { target: { value: 'a@b.com' } });
+  fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'secret1' } });
+  fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Invalid login credentials');
+  expect(supabase.auth.signInWithPassword).toHaveBeenCalledWith({ email: 'a@b.com', password: 'secret1' });
 });
 
-test('accepts Word files and no longer offers old PowerPoint files', () => {
-  localStorage.setItem('loggedIn', 'true');
-  const { container } = render(<App />);
+test('shows the upload screen after signing in and sends the sign-in token to the backend', async () => {
+  await renderSignedIn();
+  expect(screen.getByText('student@example.com')).toBeInTheDocument();
+  expect(axios.defaults.headers.common.Authorization).toBe('Bearer token-1');
+  expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/progress$/));
+});
+
+test('accepts Word files and no longer offers old PowerPoint files', async () => {
+  const { container } = await renderSignedIn();
   const accepted = container.querySelector('input[type="file"]').accept.split(',');
   expect(accepted).toContain('.docx');
   expect(accepted).not.toContain('.ppt');
 });
 
 test('shows topics, concepts and their sources after an upload', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockResolvedValue({
+  routes['/upload'] = {
     data: {
       summary: 'A summary.',
       notes: ['A note'],
@@ -51,12 +109,10 @@ test('shows topics, concepts and their sources after an upload', async () => {
         coverage: { percent: 40, sections: 30, firstSource: 'Page 1', lastSource: 'Page 30' },
       },
     },
-  });
+  };
 
-  const { container } = render(<App />);
-  const file = new File(['content'], 'lecture.pdf', { type: 'application/pdf' });
-  fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  await renderSignedIn();
+  uploadFile();
 
   await openView('Topics');
   expect(screen.getByText('Binary tree')).toBeInTheDocument();
@@ -65,67 +121,51 @@ test('shows topics, concepts and their sources after an upload', async () => {
   expect(screen.getByText(/about 40% of your material/)).toBeInTheDocument();
 });
 
-test('rejects an unsupported file before uploading', () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockClear();
-  const { container } = render(<App />);
-  const file = new File(['content'], 'slides.ppt');
-  fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+test('rejects an unsupported file before uploading', async () => {
+  await renderSignedIn();
+  uploadFile('slides.ppt');
 
   expect(screen.getByText(/unsupported file type/i)).toBeInTheDocument();
   expect(axios.post).not.toHaveBeenCalled();
 });
 
 test('tutor shows an answer with its source and sends the conversation with a follow-up', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockReset();
-  axios.post.mockResolvedValueOnce({ data: { docId: 'doc-1', summary: 'A summary.', notes: [], flashcards: [], quiz: [], warnings: [], knowledge: null } });
-
-  const { container } = render(<App />);
-  const file = new File(['content'], 'lecture.pdf');
-  fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  routes['/upload'] = { data: { docId: 'doc-1', summary: 'A summary.', notes: [], flashcards: [], quiz: [], warnings: [], knowledge: null } };
+  await renderSignedIn();
+  uploadFile();
   await openView('Tutor');
 
-  axios.post.mockResolvedValueOnce({
-    data: { answer: 'Thrashing is constant page swapping.', found: true, sources: [{ source: 'Page 4', excerpt: 'Thrashing happens when' }] },
-  });
+  routes['/ask'] = { data: { answer: 'Thrashing is constant page swapping.', found: true, sources: [{ source: 'Page 4', excerpt: 'Thrashing happens when' }] } };
   fireEvent.change(screen.getByPlaceholderText(/ask a question/i), { target: { value: 'What is thrashing?' } });
   fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
 
   expect(await screen.findByText('Thrashing is constant page swapping.')).toBeInTheDocument();
   expect(screen.getByText('Page 4')).toBeInTheDocument();
-  expect(axios.post).toHaveBeenLastCalledWith(expect.stringMatching(/\/ask$/), {
-    docId: 'doc-1', question: 'What is thrashing?', history: [], level: 'simple',
-  });
+  expect(bodiesSentTo('/ask')[0]).toEqual({ docId: 'doc-1', question: 'What is thrashing?', history: [], level: 'simple' });
 
-  axios.post.mockResolvedValueOnce({ data: { answer: 'The material does not cover this topic.', found: false, sources: [] } });
+  routes['/ask'] = { data: { answer: 'The material does not cover this topic.', found: false, sources: [] } };
   fireEvent.click(screen.getByText('Give me an example'));
 
   expect(await screen.findByText(/not found in your material/i)).toBeInTheDocument();
-  expect(axios.post.mock.calls[2][1].history).toEqual([
+  expect(bodiesSentTo('/ask')[1].history).toEqual([
     { role: 'student', text: 'What is thrashing?' },
     { role: 'tutor', text: 'Thrashing is constant page swapping.' },
   ]);
 });
 
 test('quiz explains a wrong answer, suggests a cause, and offers practice on weak concepts', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockReset();
   const question = (q, concept, difficulty) => ({
     q, options: ['FCFS', 'Round Robin'], answer: 'Round Robin', difficulty, concept, explanation: 'Stored explanation.',
   });
-  axios.post.mockResolvedValueOnce({
+  routes['/upload'] = {
     data: {
       docId: 'doc-1', summary: 'A summary.', notes: [], flashcards: [], warnings: [], knowledge: null, originalText: 'text',
       quiz: [question('Which uses a time quantum?', 'Round Robin', 'easy'), question('Which preempts?', 'Preemption', 'hard')],
     },
-  });
+  };
 
-  const { container } = render(<App />);
-  fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'lecture.pdf')] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  await renderSignedIn();
+  uploadFile();
   await openView('Quiz');
 
   expect(screen.getByText('easy')).toBeInTheDocument();
@@ -135,23 +175,23 @@ test('quiz explains a wrong answer, suggests a cause, and offers practice on wea
   fireEvent.click(screen.getAllByText('FCFS')[0]);
   fireEvent.click(screen.getAllByText('Round Robin')[2]);
 
-  axios.post.mockResolvedValueOnce({
+  routes['/analyze-mistakes'] = {
     data: {
       analysis: [{ index: 0, explanation: 'FCFS has no time quantum.', category: 'knowledge_gap', evidence: 'You picked an unrelated algorithm.', source: 'Page 2' }],
       weakConcepts: [{ name: 'Round Robin', wrong: 1, difficulty: 'easy' }],
     },
-  });
+  };
   fireEvent.click(screen.getByText('Submit Quiz'));
 
   expect(screen.getByText('Score: 1 / 2')).toBeInTheDocument();
   expect(await screen.findByText('FCFS has no time quantum.')).toBeInTheDocument();
   expect(screen.getByText(/Knowledge gap - You picked an unrelated algorithm\./)).toBeInTheDocument();
   expect(screen.getByText(/Concepts to work on:/)).toBeInTheDocument();
-  expect(axios.post.mock.calls[1][0]).toMatch(/\/analyze-mistakes$/);
-  expect(axios.post.mock.calls[1][1].answers).toHaveLength(2);
-  expect(axios.post.mock.calls[1][1].answers[0]).toMatchObject({ index: 0, chosen: 'FCFS', answer: 'Round Robin', concept: 'Round Robin' });
+  const sent = bodiesSentTo('/analyze-mistakes')[0];
+  expect(sent.answers).toHaveLength(2);
+  expect(sent.answers[0]).toMatchObject({ index: 0, chosen: 'FCFS', answer: 'Round Robin', concept: 'Round Robin' });
 
-  axios.post.mockResolvedValueOnce({ data: { questions: [question('What happens when the quantum expires?', 'Round Robin', 'easy')], concepts: ['Round Robin'] } });
+  routes['/practice'] = { data: { questions: [question('What happens when the quantum expires?', 'Round Robin', 'easy')], concepts: ['Round Robin'] } };
   fireEvent.click(screen.getByText('Practice weak concepts'));
 
   expect(await screen.findByText(/Practice round on your weak concepts/)).toBeInTheDocument();
@@ -163,66 +203,88 @@ test('quiz explains a wrong answer, suggests a cause, and offers practice on wea
 });
 
 test('quiz does not guess a cause when the evidence is unclear', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockReset();
-  axios.post.mockResolvedValueOnce({
+  routes['/upload'] = {
     data: {
       docId: 'doc-2', summary: 'S', notes: [], flashcards: [], warnings: [], knowledge: null,
       quiz: [{ q: 'Which uses a time quantum?', options: ['FCFS', 'Round Robin'], answer: 'Round Robin', difficulty: 'easy', concept: 'Round Robin', explanation: '' }],
     },
-  });
+  };
 
-  const { container } = render(<App />);
-  fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'lecture.pdf')] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  await renderSignedIn();
+  uploadFile();
   await openView('Quiz');
   fireEvent.click(screen.getByText('FCFS'));
 
-  axios.post.mockResolvedValueOnce({ data: { analysis: [{ index: 0, explanation: 'FCFS has no quantum.', category: 'unclear', evidence: '', source: '' }], weakConcepts: [] } });
+  routes['/analyze-mistakes'] = { data: { analysis: [{ index: 0, explanation: 'FCFS has no quantum.', category: 'unclear', evidence: '', source: '' }], weakConcepts: [] } };
   fireEvent.click(screen.getByText('Submit Quiz'));
 
   expect(await screen.findByText(/one wrong answer is not enough to tell why/)).toBeInTheDocument();
 });
 
-test('dashboard locks the tools until a file is uploaded, then shows the study set and quiz results', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockReset();
-  render(<App />);
+test('dashboard locks the tools until a file is uploaded, then saves the quiz result and shows progress', async () => {
+  await renderSignedIn();
 
   expect(screen.getByRole('button', { name: 'Quiz' })).toBeDisabled();
   expect(screen.getByText(/upload a file to unlock/i)).toBeInTheDocument();
 
-  axios.post.mockResolvedValueOnce({
+  routes['/upload'] = {
     data: {
       docId: 'doc-3', summary: 'The summary text.', notes: ['n1', 'n2'], flashcards: [{ q: 'a', a: 'b' }], warnings: [],
       knowledge: { topics: [{ name: 'T', subtopics: [], concepts: [{ name: 'C1', definition: 'd', example: '', source: '' }] }], relationships: [], coverage: { percent: 100, sections: 1, firstSource: 'Page 1', lastSource: 'Page 1' } },
       quiz: [{ q: 'Pick one?', options: ['A', 'B'], answer: 'A', difficulty: 'easy', concept: 'C1', explanation: '' }],
     },
-  });
-  fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'chapter.pdf')] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  };
+  uploadFile('chapter.pdf');
 
   // The summary opens straight after the upload
   expect(await screen.findByText('The summary text.')).toBeInTheDocument();
 
+  routes['/attempts'] = {
+    data: {
+      attempts: [{ id: 'a1', fileName: 'chapter.pdf', practice: false, correct: 1, total: 1, createdAt: '2026-11-20T10:00:00Z' }],
+      concepts: [{ name: 'C1', mastery: 0.6, level: 'new', answers: 1, correct: 1, lastSeen: '2026-11-20T10:00:00Z' }],
+    },
+  };
   await openView('Quiz');
   fireEvent.click(screen.getByText('A'));
   fireEvent.click(screen.getByText('Submit Quiz'));
 
+  await waitFor(() => expect(bodiesSentTo('/attempts')).toHaveLength(1));
+  expect(bodiesSentTo('/attempts')[0]).toMatchObject({ docId: 'doc-3', fileName: 'chapter.pdf', practice: false, total: 1 });
+  expect(bodiesSentTo('/attempts')[0].answers[0]).toMatchObject({ q: 'Pick one?', chosen: 'A', answer: 'A', concept: 'C1' });
+
   fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
   expect(screen.getByRole('heading', { name: 'chapter.pdf' })).toBeInTheDocument();
   expect(screen.getByText('100% analysed')).toBeInTheDocument();
-  expect(screen.getByText('Your quiz results')).toBeInTheDocument();
+  expect(await screen.findByText('Recent quiz results')).toBeInTheDocument();
   expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  expect(screen.getByText('Concept mastery')).toBeInTheDocument();
+  expect(screen.getByText('Not enough answers yet')).toBeInTheDocument();
+});
+
+test('a returning student sees saved progress before uploading anything', async () => {
+  routes['/progress'] = {
+    data: {
+      attempts: [{ id: 'a1', fileName: 'os.pdf', practice: true, correct: 2, total: 4, createdAt: '2026-11-19T10:00:00Z' }],
+      concepts: [
+        { name: 'Deadlock', mastery: 0.3, level: 'weak', answers: 4, correct: 1, lastSeen: '2026-11-19T10:00:00Z' },
+        { name: 'Paging', mastery: 0.8, level: 'mastered', answers: 5, correct: 5, lastSeen: '2026-11-19T10:00:00Z' },
+      ],
+    },
+  };
+  await renderSignedIn();
+
+  expect(await screen.findByText('Recent quiz results')).toBeInTheDocument();
+  expect(screen.getByText('2 / 4')).toBeInTheDocument();
+  expect(screen.getByText(/Focus next:/).parentElement).toHaveTextContent('Deadlock');
+  expect(screen.getByText('Mastered')).toBeInTheDocument();
+  expect(screen.getByText('1 of 4 answers right · 30%')).toBeInTheDocument();
 });
 
 test('summary shows AI bold markers as bold text, not symbols', async () => {
-  localStorage.setItem('loggedIn', 'true');
-  axios.post.mockReset();
-  axios.post.mockResolvedValueOnce({ data: { docId: 'd', summary: 'A **process** is a program.', notes: [], flashcards: [], quiz: [], warnings: [], knowledge: null } });
-  render(<App />);
-  fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'a.pdf')] } });
-  fireEvent.click(screen.getByText(/generate my study set/i));
+  routes['/upload'] = { data: { docId: 'd', summary: 'A **process** is a program.', notes: [], flashcards: [], quiz: [], warnings: [], knowledge: null } };
+  await renderSignedIn();
+  uploadFile('a.pdf');
 
   const bold = await screen.findByText('process');
   expect(bold.tagName).toBe('STRONG');

@@ -166,6 +166,26 @@
 .stat:nth-child(3) { --accent:#3d9b70; --tint:#e8f4ee; }
 .stat:nth-child(4) { --accent:#8b6fb5; --tint:#f2edf8; }
 
-/* Session results in the same spirit */
+/* Quiz results in the same spirit */
 .attempt { border-top:3px solid var(--blue); background:#eaf4f8; }
 .panel .weak-concepts { background:#fcf3e3; border-left-color:#d9902a; }
+
+/* ---------- Accounts and saved progress (Phase 5) ---------- */
+.app-loading { padding:40px; color:var(--muted); font-family:var(--mono); font-size:12px; }
+.auth-message { margin:16px 0 0; padding:10px 12px; color:var(--navy); background:var(--paper); border-left:3px solid var(--blue); font-size:13px; line-height:1.5; }
+.auth-message.auth-error { color:#9b3428; background:#fce2dd; border-left-color:var(--coral); }
+.auth-submit:disabled { opacity:.6; cursor:default; }
+.attempt-file { overflow:hidden; max-width:180px; text-overflow:ellipsis; white-space:nowrap; }
+.mastery-note { margin:0 0 16px; color:var(--muted); font-size:13px; line-height:1.6; }
+.mastery-list { display:grid; grid-template-columns:repeat(2,1fr); gap:10px 22px; margin:0; padding:0; list-style:none; }
+.mastery-item { --level:#a9b6b0; padding:12px 0; border-top:1px solid var(--line); }
+.mastery-item.level-weak { --level:var(--coral); }
+.mastery-item.level-learning { --level:#d9902a; }
+.mastery-item.level-mastered { --level:#3d9b70; }
+.mastery-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }
+.mastery-head strong { font-size:14px; }
+.mastery-level { flex-shrink:0; color:var(--level); font-family:var(--mono); font-size:10px; letter-spacing:.07em; text-transform:uppercase; }
+.mastery-bar { height:6px; margin:8px 0 6px; background:#e4e9e2; }
+.mastery-bar span { display:block; height:100%; background:var(--level); }
+.mastery-item small { color:var(--muted); font-size:12px; }
+@media (max-width:760px) { .mastery-list { grid-template-columns:1fr; } }

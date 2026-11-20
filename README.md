@@ -18,9 +18,11 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 | Quiz | Multiple-choice questions at three difficulty levels, each tagged with the concept it tests. 10-minute timer, score by difficulty, retake |
 | Mistake analysis | After submitting, each wrong answer gets an explanation and a cautious "possible cause", and the weak concepts are listed |
 | Adaptive practice | "Practice weak concepts" writes new questions on the concepts you missed. "More questions" get harder or easier depending on your last score |
-| Dashboard | A home screen with the current study set (counts of concepts, notes, flashcards and questions), shortcuts to every tool, and this session's quiz results with the concepts to focus on |
+| Dashboard | A home screen with the current study set (counts of concepts, notes, flashcards and questions), shortcuts to every tool, your saved quiz results, and how well you know each concept |
 | Sidebar | Every tool in one left-hand menu. Tools unlock once a file is uploaded. On a phone the menu becomes a scrolling bar at the top |
-| Sign in | A simple sign-up and login screen (browser-only, see limitations) |
+| Accounts | Real sign-up and sign-in with Supabase Auth. The backend checks who is calling before doing any AI work |
+| Saved progress | Every submitted quiz is saved to your account, with each answer. Results are still there after a refresh, a server restart, or on another device |
+| Concept mastery | A score for each concept, worked out from all your saved answers. Recent answers count more, hard questions answered right count more, and a concept is only judged after three answers. Shown weakest first, with the weak ones listed under "Focus next" |
 
 ## Tech stack
 
@@ -29,7 +31,7 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 - **AI:** Groq for text generation (`openai/gpt-oss-120b`), the tutor and mistake analysis (`openai/gpt-oss-20b`) and audio transcription (`whisper-large-v3-turbo`), `gtts` for text-to-speech
 - **Retrieval:** BM25 keyword search written in plain JavaScript, with no vector database or embedding service
 - **File parsing:** `pdf-parse` (PDF), `officeparser` (PowerPoint and Word)
-- **Database:** none yet. Uploaded documents are kept in server memory
+- **Database and accounts:** Supabase (Postgres and Auth) for accounts, quiz attempts and answers. Uploaded documents are still kept in server memory
 
 ## Project structure
 
@@ -43,6 +45,8 @@ StudyScribe/
 │   │   ├── retrieve.js   Finds the parts of a document most relevant to a question
 │   │   ├── tutor.js      Answers a question from those parts and checks the sources
 │   │   ├── store.js      Keeps uploaded documents in server memory
+│   │   ├── db.js         Supabase: checks sign-in, saves and reads quiz results
+│   │   ├── mastery.js    Works out concept mastery from saved answers
 │   │   ├── quiz.js       Checks and repairs AI-written questions and flashcards
 │   │   ├── assess.js     Adaptive difficulty, mistake analysis, practice questions
 │   │   ├── ai.js         The one function that calls the LLM, and JSON parsing
@@ -53,18 +57,28 @@ StudyScribe/
 ├── frontend/
 │   ├── src/App.js        Sidebar, dashboard, upload, summary, notes, topics, tutor, flashcards
 │   ├── src/Quiz.js       Quiz, mistake review and practice rounds
-│   ├── src/Auth.js       Sign-up and login screen
+│   ├── src/Auth.js       Sign-up and sign-in screen
+│   ├── src/supabase.js   Supabase client used for sign-in
 │   ├── src/App.css       All styling
 │   └── package.json
+├── supabase/
+│   └── schema.sql        Database tables and access rules, run once in Supabase
 ├── README.md
 └── UNDERSTANDING.md
 ```
 
 ## Setup
 
-You need Node.js 18 or newer and a free [Groq API key](https://console.groq.com/keys). That one key covers every AI feature.
+You need Node.js 18 or newer, a free [Groq API key](https://console.groq.com/keys) (it covers every AI feature) and a free [Supabase](https://supabase.com) project (accounts and saved progress).
 
-### 1. Backend
+### 1. Supabase
+
+1. Create a project at https://supabase.com.
+2. Open **SQL Editor → New query**, paste the whole of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. This creates the tables and the rules that let each student read only their own results.
+3. Open **Project Settings → API Keys**. You need the project URL (`https://<project-id>.supabase.co`), the **publishable** key and the **secret** key.
+4. Optional, for testing: **Authentication → Providers → Email → Confirm email** can be switched off so new accounts work without clicking an email link.
+
+### 2. Backend
 
 ```bash
 cd backend
@@ -77,24 +91,24 @@ You should see `Server running on port 5000`. Opening http://localhost:5000 show
 
 On macOS, port 5000 is often used by AirPlay Receiver. If the server fails to start, set `PORT=5001` in `backend/.env`.
 
-### 2. Frontend
+### 3. Frontend
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env      # points the app at your local backend
+cp .env.example .env      # then add the Supabase URL and publishable key
 npm start
 ```
 
 The app opens at http://localhost:3000.
 
-`frontend/.env` holds one setting, `REACT_APP_API_URL`, which is the address of the backend. If you changed the backend port, change it here too. If the file is missing, the app uses the deployed backend at `https://studyscribe.onrender.com`.
+`frontend/.env` holds the Supabase URL and publishable key, and `REACT_APP_API_URL`, the address of the backend. If you changed the backend port, change it here too. If `REACT_APP_API_URL` is missing, the app uses the deployed backend at `https://studyscribe.onrender.com`.
 
-### 3. Tests
+### 4. Tests
 
 ```bash
-cd backend && npm test      # 36 tests, no API key needed
-cd frontend && npm test     # 10 tests
+cd backend && npm test      # 43 tests, no API key or database needed
+cd frontend && npm test     # 12 tests
 ```
 
 ## Environment variables
@@ -106,6 +120,8 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `GROQ_API_KEY` | Yes | Used for all AI features, including transcribing audio. The server refuses to start without it |
+| `SUPABASE_URL` | Yes | The Supabase project URL |
+| `SUPABASE_SECRET_KEY` | Yes | The Supabase **secret** key (`sb_secret_...`). It can read and change all data, so it stays on the server only |
 | `PORT` | No | Backend port, defaults to 5000 |
 | `ALLOWED_ORIGINS` | No | Comma-separated frontend URLs allowed to call the backend. Empty means any site |
 | `GROQ_MODEL` | No | Groq model name, defaults to `openai/gpt-oss-120b` |
@@ -116,6 +132,8 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
+| `REACT_APP_SUPABASE_URL` | Yes | The Supabase project URL |
+| `REACT_APP_SUPABASE_PUBLISHABLE_KEY` | Yes | The Supabase **publishable** key (`sb_publishable_...`). Safe in the browser. Never put the secret key here |
 | `REACT_APP_API_URL` | No | Backend address. Defaults to `https://studyscribe.onrender.com` |
 
 ## API routes
@@ -128,9 +146,13 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 | POST | `/generate-more-questions` | JSON `{ "text", "score": { "correct", "total" }, "concepts" }`. Only `text` is required | `{ "questions", "difficulty" }` |
 | POST | `/analyze-mistakes` | JSON `{ "docId", "answers" }`, where each answer has `index`, `q`, `options`, `answer`, `chosen`, `concept`, `difficulty` | `{ "analysis": [{ "index", "explanation", "category", "evidence", "source" }], "weakConcepts" }` |
 | POST | `/practice` | Same input as `/analyze-mistakes` | `{ "questions", "concepts" }` |
+| POST | `/attempts` | JSON `{ "docId", "fileName", "practice", "total", "answers" }`, answers as for `/analyze-mistakes` | The updated progress, as for `/progress` |
+| GET | `/progress` | none | `{ "attempts": [{ "id", "fileName", "practice", "correct", "total", "createdAt" }], "concepts": [{ "name", "mastery", "level", "answers", "correct", "lastSeen" }] }` |
 | GET | `/uploads/<file>.mp3` | none | A generated audio file |
 
-When something goes wrong, every route returns `{ "error": "a message the student can read" }` with a matching status code (400 bad request, 404 document no longer on the server, 413 file too large, 415 unsupported type, 422 unreadable file, 429 AI rate limit).
+Every route except `/` and `/uploads` needs the header `Authorization: Bearer <Supabase access token>`. The frontend adds it automatically after sign-in.
+
+When something goes wrong, every route returns `{ "error": "a message the student can read" }` with a matching status code (400 bad request, 401 not signed in or session expired, 404 document no longer on the server, 413 file too large, 415 unsupported type, 422 unreadable file, 429 AI rate limit).
 
 ## Known limitations
 
@@ -139,11 +161,11 @@ These describe the code as it is now. Each is covered in more detail in [UNDERST
 - Long documents are only partly analysed. The topic map reads up to about 32,000 characters (roughly 12 pages), spread evenly across the file, and shows what percentage it covered. The summary, notes and quiz use a 6,000-character sample spread across the file.
 - The topic map has been checked by hand on one short test lecture with the real AI model. Its quality on long or messy documents has not been measured.
 - An upload takes roughly 40 to 70 seconds, because the AI calls run one after another.
-- Login is stored in the browser only. The backend has no accounts and does not check who is calling it.
-- Nothing is saved permanently. Refreshing the page loses the study set and the quiz score, and restarting the server loses the documents the tutor uses (the tutor then asks for a re-upload). The server keeps the 50 most recent documents.
+- Study sets are not saved yet, only quiz results. Refreshing the page loses the study set, and restarting the server loses the documents the tutor uses (the tutor then asks for a re-upload). The server keeps the 50 most recent documents.
 - The tutor finds text by matching words, not meaning. A question that uses different words from the material (for example "memory juggling" for "thrashing") may not find the right passage.
 - Groq's free plan allows 8,000 tokens per minute per model. One upload uses most of that, so uploading several files in a row can hit "rate limit reached".
-- Quiz results are not remembered between sessions, so adaptation only uses the current quiz. (Phase 5)
+- Concept mastery is shown on the dashboard, but the quiz does not use it yet: "More questions" and practice rounds still adapt to the current quiz only. (Phase 6)
+- Concepts are matched by name across files, so two files with a concept of the same name share one mastery score.
 - A mistake's "possible cause" is a guess from limited evidence. One wrong multiple-choice answer rarely shows why it was wrong, so most single mistakes are labelled "knowledge gap" or left without a cause. At most 8 mistakes are analysed per quiz.
 - Old `.ppt` and `.doc` files, images and scanned PDFs are not supported. Word files have no page numbers, so their concepts point to a heading instead.
 - Automated tests do not call the real AI services. They cover file reading, text splitting, checking of AI output, and the main screens.
@@ -156,11 +178,11 @@ The goal is a closed learning loop:
 
 | Phase | Goal | Status |
 | --- | --- | --- |
-| 1 | Audit and stabilize the existing app | Done, except real login (moved to Phase 5) |
+| 1 | Audit and stabilize the existing app | Done |
 | 2 | Structured understanding of study material (topics, concepts, definitions) | Done, except images and OCR |
 | 3 | Grounded AI tutor using retrieval (RAG) over the uploaded material | Done |
 | 4 | Adaptive quizzes and mistake analysis | Done |
-| 5 | Student knowledge and performance model | Planned |
+| 5 | Student knowledge and performance model | Done: accounts, saved results and concept mastery. Saving study sets is still to do |
 | 6 | Orchestrator that picks the next best learning action | Planned |
 | 7 | Personalized, spaced revision | Planned |
 | 8 | Evaluation workflow and final polish | Planned |

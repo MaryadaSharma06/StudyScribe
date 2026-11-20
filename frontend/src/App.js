@@ -1,9 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import "./App.css";
 import Auth from "./Auth";
 import Quiz from "./Quiz";
 import { API_URL } from "./config";
+import { supabase } from "./supabase";
 
 const MAX_FILE_MB = 25;
 const SUPPORTED_TYPES = [".pdf", ".pptx", ".docx", ".txt", ".mp3", ".wav", ".m4a", ".ogg"];
@@ -50,13 +51,9 @@ function RichText({ text }) {
   return paragraphs.map((paragraph, i) => <p key={i}>{withBold(paragraph)}</p>);
 }
 
-function currentUserEmail() {
-  try {
-    return JSON.parse(localStorage.getItem("user"))?.email || "";
-  } catch {
-    return "";
-  }
-}
+const MASTERY_LABELS = { new: "Not enough answers yet", weak: "Weak", learning: "Learning", mastered: "Mastered" };
+
+const formatDate = (iso) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -65,14 +62,63 @@ export default function App() {
   const [uploadPopupVisible, setUploadPopupVisible] = useState(false);
   const [view, setView] = useState("dashboard");
   const [data, setData] = useState({});
-  const [attempts, setAttempts] = useState([]);   // quiz results from this session
+  const [progress, setProgress] = useState(null);   // saved attempts and concept mastery, from the backend
 
   const [errorMessage, setErrorMessage] = useState(null);
-  const [loggedIn, setLoggedIn] = useState(
-    localStorage.getItem("loggedIn") === "true"
-  );
+  const [session, setSession] = useState(undefined);   // undefined while checking, null when signed out
 
   const hasSet = Object.keys(data).length > 0;
+  const userId = session?.user?.id;
+
+  // Every backend request carries the sign-in token. Signing out clears the previous student's work.
+  useEffect(() => {
+    if (!supabase) return setSession(null);
+
+    const apply = (next) => {
+      if (next) axios.defaults.headers.common.Authorization = `Bearer ${next.access_token}`;
+      else {
+        delete axios.defaults.headers.common.Authorization;
+        setData({});
+        setProgress(null);
+        setView("dashboard");
+      }
+      setSession(next);
+    };
+
+    supabase.auth.getSession().then(({ data: { session: current } }) => apply(current));
+    // Also fires when Supabase refreshes the token, so the header stays valid
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, next) => apply(next));
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const loadProgress = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_URL}/progress`);
+      setProgress(res.data);
+    } catch (err) {
+      setErrorMessage(err.response?.data?.error || "Your saved progress could not be loaded.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (userId) loadProgress();
+  }, [userId, loadProgress]);
+
+  const saveAttempt = async (result) => {
+    if (result.answers.length === 0) return;
+    try {
+      const res = await axios.post(`${API_URL}/attempts`, {
+        docId: data.docId,
+        fileName: data.fileName,
+        practice: result.practice,
+        total: result.total,
+        answers: result.answers,
+      });
+      setProgress(res.data);
+    } catch (err) {
+      setErrorMessage(err.response?.data?.error || "Your quiz result could not be saved.");
+    }
+  };
 
   const handleUpload = async () => {
     if (!file) return alert("Please select a file");
@@ -108,7 +154,6 @@ export default function App() {
       const result = res.data;
 
       setData({ ...result, fileName: file.name });
-      setAttempts([]);
       setView("summary");
       setErrorMessage(result?.warnings?.join(" ") || null);
       setUploadStage("done");
@@ -133,13 +178,15 @@ export default function App() {
     done: "All set!"
   }[uploadStage];
 
-  if (!loggedIn) {
-    return <Auth onLogin={() => setLoggedIn(true)} />;
-  }
+  if (session === undefined) return <p className="app-loading">Loading...</p>;
+  if (!session) return <Auth />;
 
   const current = VIEWS.find((item) => item.id === view);
   const conceptNames = (data?.knowledge?.topics || []).flatMap((topic) => topic.concepts.map((c) => c.name));
-  const email = currentUserEmail();
+  const email = session.user.email;
+  const attempts = progress?.attempts || [];
+  const concepts = progress?.concepts || [];
+  const focusNext = concepts.filter((concept) => concept.level === "weak").slice(0, 5);
 
   // Shown first on the dashboard before any upload, and last once a study set exists
   const uploadBox = (
@@ -185,10 +232,7 @@ export default function App() {
           {email && <span className="user-email" title={email}>{email}</span>}
           <button
             className="nav-item"
-            onClick={() => {
-              localStorage.removeItem("loggedIn");
-              setLoggedIn(false);
-            }}
+            onClick={() => supabase.auth.signOut()}
           >
             <span className="nav-icon" aria-hidden="true">↪</span>
             Log out
@@ -255,27 +299,53 @@ export default function App() {
               </div>
             </section>
 
+            {/* Saved in Supabase, so it is still here after a refresh or on another device */}
             {attempts.length > 0 && (
               <section className="panel">
                 <div className="panel-head">
-                  <div><span className="section-kicker">This session</span><h2>Your quiz results</h2></div>
-                  <span className="result-count">Not saved yet</span>
+                  <div><span className="section-kicker">Your progress</span><h2>Recent quiz results</h2></div>
+                  <span className="result-count">Saved to your account</span>
                 </div>
                 <div className="attempt-list">
-                  {attempts.map((attempt, i) => (
-                    <div key={i} className="attempt">
-                      <span className="attempt-kind">{attempt.practice ? "Practice" : "Quiz"} {i + 1}</span>
+                  {attempts.slice(0, 6).map((attempt) => (
+                    <div key={attempt.id} className="attempt">
+                      <span className="attempt-kind">{attempt.practice ? "Practice" : "Quiz"}</span>
                       <strong>{attempt.correct} / {attempt.total}</strong>
-                      <span>{Math.round((attempt.correct / attempt.total) * 100)}% · {attempt.time}</span>
+                      <span>{Math.round((attempt.correct / attempt.total) * 100)}% · {formatDate(attempt.createdAt)}</span>
+                      {attempt.fileName && <span className="attempt-file" title={attempt.fileName}>{attempt.fileName}</span>}
                     </div>
                   ))}
                 </div>
-                {attempts[attempts.length - 1].weakConcepts.length > 0 && (
+                {focusNext.length > 0 && (
                   <div className="weak-concepts">
-                    <b>Focus next:</b> {attempts[attempts.length - 1].weakConcepts.join(", ")}
-                    <button className="app-button secondary-button" onClick={() => setView("quiz")}>Go to quiz</button>
+                    <b>Focus next:</b> {focusNext.map((concept) => concept.name).join(", ")}
+                    {hasSet && <button className="app-button secondary-button" onClick={() => setView("quiz")}>Go to quiz</button>}
                   </div>
                 )}
+              </section>
+            )}
+
+            {concepts.length > 0 && (
+              <section className="panel">
+                <div className="panel-head">
+                  <div><span className="section-kicker">Your progress</span><h2>Concept mastery</h2></div>
+                  <span className="result-count">Weakest first</span>
+                </div>
+                <p className="mastery-note">Worked out from every quiz answer you have saved. Recent answers count more, and a concept needs at least three answers before it is judged.</p>
+                <ul className="mastery-list">
+                  {concepts.slice(0, 12).map((concept) => (
+                    <li key={concept.name} className={`mastery-item level-${concept.level}`}>
+                      <div className="mastery-head">
+                        <strong>{concept.name}</strong>
+                        <span className="mastery-level">{MASTERY_LABELS[concept.level]}</span>
+                      </div>
+                      <div className="mastery-bar" role="img" aria-label={`${Math.round(concept.mastery * 100)}% mastery`}>
+                        <span style={{ width: `${Math.round(concept.mastery * 100)}%` }} />
+                      </div>
+                      <small>{concept.correct} of {concept.answers} answers right · {Math.round(concept.mastery * 100)}%</small>
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 
@@ -354,9 +424,7 @@ export default function App() {
                 initialQuestions={data?.quiz || []}
                 originalText={data?.originalText}
                 conceptNames={conceptNames}
-                onResult={(result) =>
-                  setAttempts((prev) => [...prev, { ...result, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }])
-                }
+                onResult={saveAttempt}
               />
             </div>
           </div>

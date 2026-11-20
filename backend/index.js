@@ -15,6 +15,8 @@ const { cleanQuiz, cleanFlashcards, conceptNamesOf, questionRules, QUESTION_FORM
 const { nextDifficulty, weakConcepts, analyzeMistakes, practiceQuestions } = require("./lib/assess");
 const { saveDocument, getDocument } = require("./lib/store");
 const { answerQuestion, LEVELS } = require("./lib/tutor");
+const { userFromToken, saveAttempt, recentAttempts, answerHistory } = require("./lib/db");
+const { conceptMastery } = require("./lib/mastery");
 
 /* ---------- CONFIG ---------- */
 const MAX_FILE_MB = 25;
@@ -23,10 +25,13 @@ const MAX_QUESTION_CHARS = 500;
 const MAX_HISTORY_TURNS = 6;     // how many earlier chat messages the tutor is shown
 const MAX_TURN_CHARS = 1000;
 const MAX_ANSWERS = 60;          // most quiz answers accepted in one request
+const MAX_SAVED_ANSWERS = 200;   // most answers saved from one quiz attempt
 
-if (!process.env.GROQ_API_KEY) {
-  console.error("GROQ_API_KEY is missing. Copy backend/.env.example to backend/.env and add your key.");
-  process.exit(1);
+for (const key of ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]) {
+  if (!process.env[key]) {
+    console.error(`${key} is missing. Copy backend/.env.example to backend/.env and add your keys.`);
+    process.exit(1);
+  }
 }
 
 // ALLOWED_ORIGINS is a comma-separated list of frontend URLs. If it is empty, every origin is allowed.
@@ -60,6 +65,19 @@ function sendError(res, error, fallbackMessage) {
   res.status(500).json({ error: fallbackMessage, details: error.message });
 }
 
+/* ---------- SIGN-IN CHECK ---------- */
+// Every route that uses the AI or the database needs a signed-in student.
+// The frontend sends the Supabase access token as "Authorization: Bearer <token>".
+async function requireUser(req, res, next) {
+  const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const user = await userFromToken(token).catch(() => null);
+  if (!user) {
+    return res.status(401).json({ error: "Your session has expired. Please sign in again." });
+  }
+  req.user = user;
+  next();
+}
+
 /* ---------- AUDIO ---------- */
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -90,7 +108,7 @@ app.get("/", (req, res) => {
 });
 
 /* ---------- MAIN UPLOAD ---------- */
-app.post("/upload", upload.single("file"), async (req, res) => {
+app.post("/upload", requireUser, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       throw new UserError("No file was uploaded. Please choose a file first.");
@@ -232,7 +250,7 @@ ${text}
   }
 });
 
-app.post("/generate-more-questions", async (req, res) => {
+app.post("/generate-more-questions", requireUser, async (req, res) => {
   try {
     const { text, score, concepts } = req.body || {};
 
@@ -284,15 +302,11 @@ ${contentText}
 
 /* ---------- ASSESSMENT ---------- */
 
-// Reads the document and the student's answers from a request, keeping only well-formed answers.
-function readAssessment(body) {
-  const document = typeof body?.docId === "string" ? getDocument(body.docId) : null;
-  if (!document) {
-    throw new UserError("This document is no longer available on the server. Please upload it again.", 404);
-  }
+const short = (value, max) => (typeof value === "string" ? value.trim().slice(0, max) : "");
 
-  const short = (value, max) => (typeof value === "string" ? value.trim().slice(0, max) : "");
-  const answers = (Array.isArray(body.answers) ? body.answers : []).slice(0, MAX_ANSWERS).flatMap((item) => {
+// Keeps only well-formed quiz answers from a request.
+function cleanAnswers(list, max) {
+  const answers = (Array.isArray(list) ? list : []).slice(0, max).flatMap((item) => {
     const options = (Array.isArray(item?.options) ? item.options : []).map((opt) => short(opt, 300)).filter(Boolean).slice(0, 6);
     const answer = short(item?.answer, 300);
     const chosen = short(item?.chosen, 300);
@@ -315,11 +329,20 @@ function readAssessment(body) {
   if (answers.length === 0) {
     throw new UserError("No quiz answers were provided.");
   }
-  return { document, answers };
+  return answers;
+}
+
+// Reads the document and the student's answers from a request.
+function readAssessment(body) {
+  const document = typeof body?.docId === "string" ? getDocument(body.docId) : null;
+  if (!document) {
+    throw new UserError("This document is no longer available on the server. Please upload it again.", 404);
+  }
+  return { document, answers: cleanAnswers(body.answers, MAX_ANSWERS) };
 }
 
 // Explains each wrong answer and suggests a likely cause
-app.post("/analyze-mistakes", async (req, res) => {
+app.post("/analyze-mistakes", requireUser, async (req, res) => {
   try {
     const { document, answers } = readAssessment(req.body);
     const analysis = await analyzeMistakes(document.pieces, answers);
@@ -332,7 +355,7 @@ app.post("/analyze-mistakes", async (req, res) => {
 });
 
 // Writes new questions on the concepts the student got wrong
-app.post("/practice", async (req, res) => {
+app.post("/practice", requireUser, async (req, res) => {
   try {
     const { document, answers } = readAssessment(req.body);
     const concepts = weakConcepts(answers);
@@ -353,8 +376,49 @@ app.post("/practice", async (req, res) => {
   }
 });
 
+/* ---------- PROGRESS ---------- */
+
+// The student's recent attempts and how well they know each concept
+async function progressFor(userId) {
+  const [attempts, answers] = await Promise.all([recentAttempts(userId), answerHistory(userId)]);
+  return { attempts, concepts: conceptMastery(answers) };
+}
+
+// Saves a submitted quiz and returns the updated progress.
+// It does not need the document, so results still save after the server restarts.
+app.post("/attempts", requireUser, async (req, res) => {
+  try {
+    const answers = cleanAnswers(req.body?.answers, MAX_SAVED_ANSWERS)
+      .map((item) => ({ ...item, correct: item.chosen === item.answer }));
+
+    // Unanswered questions still count towards the total
+    const total = Math.min(Math.max(Number.parseInt(req.body.total, 10) || 0, answers.length), MAX_SAVED_ANSWERS);
+
+    await saveAttempt(req.user.id, {
+      docId: short(req.body.docId, 100),
+      fileName: short(req.body.fileName, 200),
+      practice: req.body.practice === true,
+      total,
+      answers,
+    });
+
+    res.json(await progressFor(req.user.id));
+
+  } catch (error) {
+    sendError(res, error, "Your quiz result could not be saved.");
+  }
+});
+
+app.get("/progress", requireUser, async (req, res) => {
+  try {
+    res.json(await progressFor(req.user.id));
+  } catch (error) {
+    sendError(res, error, "Your progress could not be loaded.");
+  }
+});
+
 /* ---------- TUTOR ---------- */
-app.post("/ask", async (req, res) => {
+app.post("/ask", requireUser, async (req, res) => {
   try {
     const { docId, question, history, level } = req.body || {};
 

@@ -55,6 +55,24 @@ const MASTERY_LABELS = { new: "Not enough answers yet", weak: "Weak", learning: 
 
 const formatDate = (iso) => new Date(iso).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
+// Which study set to reopen after a refresh. Only a convenience for this browser, so failures are ignored.
+const lastSetKey = (userId) => `studyscribe.lastSet.${userId}`;
+function readLastSet(userId) {
+  try {
+    return localStorage.getItem(lastSetKey(userId));
+  } catch {
+    return null;
+  }
+}
+function writeLastSet(userId, id) {
+  try {
+    if (id) localStorage.setItem(lastSetKey(userId), id);
+    else localStorage.removeItem(lastSetKey(userId));
+  } catch {
+    // Storage blocked: the set just will not reopen by itself
+  }
+}
+
 export default function App() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -63,6 +81,7 @@ export default function App() {
   const [view, setView] = useState("dashboard");
   const [data, setData] = useState({});
   const [progress, setProgress] = useState(null);   // saved attempts and concept mastery, from the backend
+  const [studySets, setStudySets] = useState([]);   // the student's saved uploads, newest first
 
   const [errorMessage, setErrorMessage] = useState(null);
   const [session, setSession] = useState(undefined);   // undefined while checking, null when signed out
@@ -80,6 +99,7 @@ export default function App() {
         delete axios.defaults.headers.common.Authorization;
         setData({});
         setProgress(null);
+        setStudySets([]);
         setView("dashboard");
       }
       setSession(next);
@@ -100,9 +120,55 @@ export default function App() {
     }
   }, []);
 
+  const loadStudySets = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API_URL}/study-sets`);
+      setStudySets(res.data.studySets || []);
+    } catch (err) {
+      setErrorMessage(err.response?.data?.error || "Your saved study sets could not be loaded.");
+    }
+  }, []);
+
+  // `quiet` is for reopening the last set after a refresh: if that fails, nothing is shown
+  const openStudySet = useCallback(async (id, { quiet = false, nextView = "summary" } = {}) => {
+    try {
+      const res = await axios.get(`${API_URL}/study-sets/${id}`);
+      setData(res.data);
+      setView(nextView);
+      if (!quiet) setErrorMessage(null);
+      return true;
+    } catch (err) {
+      if (!quiet) setErrorMessage(err.response?.data?.error || "This study set could not be opened.");
+      return false;
+    }
+  }, []);
+
+  // On sign-in: load progress and saved sets, and reopen the set that was open last time
   useEffect(() => {
-    if (userId) loadProgress();
-  }, [userId, loadProgress]);
+    if (!userId) return;
+    loadProgress();
+    loadStudySets();
+    const last = readLastSet(userId);
+    if (last) openStudySet(last, { quiet: true, nextView: "dashboard" }).then((opened) => opened || writeLastSet(userId, null));
+  }, [userId, loadProgress, loadStudySets, openStudySet]);
+
+  useEffect(() => {
+    if (userId && data.docId) writeLastSet(userId, data.docId);
+  }, [userId, data.docId]);
+
+  const removeStudySet = async (set) => {
+    if (!window.confirm(`Delete "${set.fileName}"? Your quiz results from it are kept.`)) return;
+    try {
+      await axios.delete(`${API_URL}/study-sets/${set.id}`);
+      setStudySets((prev) => prev.filter((item) => item.id !== set.id));
+      if (data.docId === set.id) {
+        setData({});
+        writeLastSet(userId, null);
+      }
+    } catch (err) {
+      setErrorMessage(err.response?.data?.error || "This study set could not be deleted.");
+    }
+  };
 
   const saveAttempt = async (result) => {
     if (result.answers.length === 0) return;
@@ -155,6 +221,7 @@ export default function App() {
 
       setData({ ...result, fileName: file.name });
       setView("summary");
+      loadStudySets();
       setErrorMessage(result?.warnings?.join(" ") || null);
       setUploadStage("done");
       setTimeout(() => setUploadPopupVisible(false), 700);
@@ -279,6 +346,29 @@ export default function App() {
                     <div key={label} className="stat"><strong>{value}</strong><span>{label}</span></div>
                   ))}
                 </div>
+              </section>
+            )}
+
+            {studySets.length > 0 && (
+              <section className="panel">
+                <div className="panel-head">
+                  <div><span className="section-kicker">Saved to your account</span><h2>Your study sets</h2></div>
+                  <span className="result-count">{studySets.length} saved</span>
+                </div>
+                <ul className="set-list">
+                  {studySets.map((set) => (
+                    <li key={set.id} className={set.id === data.docId ? "set-item current" : "set-item"}>
+                      <div>
+                        <strong title={set.fileName}>{set.fileName || "Untitled file"}</strong>
+                        <span>{formatDate(set.createdAt)}</span>
+                      </div>
+                      {set.id === data.docId
+                        ? <span className="set-open-now">Open now</span>
+                        : <button className="app-button secondary-button" onClick={() => openStudySet(set.id)}>Open</button>}
+                      <button className="set-delete" onClick={() => removeStudySet(set)} aria-label={`Delete ${set.fileName}`} title="Delete">×</button>
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
 

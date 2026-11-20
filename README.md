@@ -21,6 +21,7 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 | Dashboard | A home screen with the current study set (counts of concepts, notes, flashcards and questions), shortcuts to every tool, your saved quiz results, and how well you know each concept |
 | Sidebar | Every tool in one left-hand menu. Tools unlock once a file is uploaded. On a phone the menu becomes a scrolling bar at the top |
 | Accounts | Real sign-up and sign-in with Supabase Auth. The backend checks who is calling before doing any AI work |
+| Saved study sets | Every upload is saved to your account: summary, notes, topics, flashcards, quiz, and the text the tutor searches. The dashboard lists them to reopen or delete, and the last one you opened comes back after a refresh |
 | Saved progress | Every submitted quiz is saved to your account, with each answer. Results are still there after a refresh, a server restart, or on another device |
 | Concept mastery | A score for each concept, worked out from all your saved answers. Recent answers count more, hard questions answered right count more, and a concept is only judged after three answers. Shown weakest first, with the weak ones listed under "Focus next" |
 
@@ -31,7 +32,7 @@ This repository is being extended into **StudyScribe 2.0**, an adaptive learning
 - **AI:** Groq for text generation (`openai/gpt-oss-120b`), the tutor and mistake analysis (`openai/gpt-oss-20b`) and audio transcription (`whisper-large-v3-turbo`), `gtts` for text-to-speech
 - **Retrieval:** BM25 keyword search written in plain JavaScript, with no vector database or embedding service
 - **File parsing:** `pdf-parse` (PDF), `officeparser` (PowerPoint and Word)
-- **Database and accounts:** Supabase (Postgres and Auth) for accounts, quiz attempts and answers. Uploaded documents are still kept in server memory
+- **Database and accounts:** Supabase (Postgres and Auth) for accounts, study sets, quiz attempts and answers. Recently used documents are also kept in server memory so the tutor is fast
 
 ## Project structure
 
@@ -44,7 +45,7 @@ StudyScribe/
 │   │   ├── understand.js Splits text and builds the topic and concept map
 │   │   ├── retrieve.js   Finds the parts of a document most relevant to a question
 │   │   ├── tutor.js      Answers a question from those parts and checks the sources
-│   │   ├── store.js      Keeps uploaded documents in server memory
+│   │   ├── store.js      Keeps recently used documents in server memory
 │   │   ├── db.js         Supabase: checks sign-in, saves and reads quiz results
 │   │   ├── mastery.js    Works out concept mastery from saved answers
 │   │   ├── quiz.js       Checks and repairs AI-written questions and flashcards
@@ -107,8 +108,8 @@ The app opens at http://localhost:3000.
 ### 4. Tests
 
 ```bash
-cd backend && npm test      # 43 tests, no API key or database needed
-cd frontend && npm test     # 12 tests
+cd backend && npm test      # 44 tests, no API key or database needed
+cd frontend && npm test     # 14 tests
 ```
 
 ## Environment variables
@@ -147,12 +148,15 @@ The `.env` files are ignored by Git and must never be committed. When deploying,
 | POST | `/analyze-mistakes` | JSON `{ "docId", "answers" }`, where each answer has `index`, `q`, `options`, `answer`, `chosen`, `concept`, `difficulty` | `{ "analysis": [{ "index", "explanation", "category", "evidence", "source" }], "weakConcepts" }` |
 | POST | `/practice` | Same input as `/analyze-mistakes` | `{ "questions", "concepts" }` |
 | POST | `/attempts` | JSON `{ "docId", "fileName", "practice", "total", "answers" }`, answers as for `/analyze-mistakes` | The updated progress, as for `/progress` |
+| GET | `/study-sets` | none | `{ "studySets": [{ "id", "fileName", "createdAt" }] }`, newest first |
+| GET | `/study-sets/<id>` | none | A saved study set, in the same shape as the `/upload` response |
+| DELETE | `/study-sets/<id>` | none | `{ "deleted": true }`. Quiz results from the set are kept |
 | GET | `/progress` | none | `{ "attempts": [{ "id", "fileName", "practice", "correct", "total", "createdAt" }], "concepts": [{ "name", "mastery", "level", "answers", "correct", "lastSeen" }] }` |
 | GET | `/uploads/<file>.mp3` | none | A generated audio file |
 
 Every route except `/` and `/uploads` needs the header `Authorization: Bearer <Supabase access token>`. The frontend adds it automatically after sign-in.
 
-When something goes wrong, every route returns `{ "error": "a message the student can read" }` with a matching status code (400 bad request, 401 not signed in or session expired, 404 document no longer on the server, 413 file too large, 415 unsupported type, 422 unreadable file, 429 AI rate limit).
+When something goes wrong, every route returns `{ "error": "a message the student can read" }` with a matching status code (400 bad request, 401 not signed in or session expired, 404 study set not found or not yours, 413 file too large, 415 unsupported type, 422 unreadable file, 429 AI rate limit).
 
 ## Known limitations
 
@@ -161,7 +165,7 @@ These describe the code as it is now. Each is covered in more detail in [UNDERST
 - Long documents are only partly analysed. The topic map reads up to about 32,000 characters (roughly 12 pages), spread evenly across the file, and shows what percentage it covered. The summary, notes and quiz use a 6,000-character sample spread across the file.
 - The topic map has been checked by hand on one short test lecture with the real AI model. Its quality on long or messy documents has not been measured.
 - An upload takes roughly 40 to 70 seconds, because the AI calls run one after another.
-- Study sets are not saved yet, only quiz results. Refreshing the page loses the study set, and restarting the server loses the documents the tutor uses (the tutor then asks for a re-upload). The server keeps the 50 most recent documents.
+- Audio summaries are files on the backend server, not in Supabase. On a host that wipes its disk on restart (such as Render's free plan) the audio of an older study set stops playing.
 - The tutor finds text by matching words, not meaning. A question that uses different words from the material (for example "memory juggling" for "thrashing") may not find the right passage.
 - Groq's free plan allows 8,000 tokens per minute per model. One upload uses most of that, so uploading several files in a row can hit "rate limit reached".
 - Concept mastery is shown on the dashboard, but the quiz does not use it yet: "More questions" and practice rounds still adapt to the current quiz only. (Phase 6)
@@ -182,7 +186,7 @@ The goal is a closed learning loop:
 | 2 | Structured understanding of study material (topics, concepts, definitions) | Done, except images and OCR |
 | 3 | Grounded AI tutor using retrieval (RAG) over the uploaded material | Done |
 | 4 | Adaptive quizzes and mistake analysis | Done |
-| 5 | Student knowledge and performance model | Done: accounts, saved results and concept mastery. Saving study sets is still to do |
+| 5 | Student knowledge and performance model | Done: accounts, saved study sets, saved quiz results and concept mastery |
 | 6 | Orchestrator that picks the next best learning action | Planned |
 | 7 | Personalized, spaced revision | Planned |
 | 8 | Evaluation workflow and final polish | Planned |

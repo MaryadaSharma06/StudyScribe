@@ -1,6 +1,7 @@
 -- StudyScribe database setup (Phase 5).
 -- Run once in the Supabase dashboard: SQL Editor -> New query -> paste this file -> Run.
--- It is safe to run again: existing tables and policies are kept.
+-- It is safe to run again: existing tables, policies and data are kept.
+-- When this file gains new tables, run the whole file again.
 
 -- One row per submitted quiz or practice round
 create table if not exists public.quiz_attempts (
@@ -48,3 +49,33 @@ create policy "Students read their own answers" on public.quiz_answers
 revoke all on public.quiz_attempts, public.quiz_answers from anon;
 revoke insert, update, delete on public.quiz_attempts, public.quiz_answers from authenticated;
 grant select on public.quiz_attempts, public.quiz_answers to authenticated;
+
+-- ---------- Added after Phase 5: saved study sets ----------
+
+-- One row per uploaded file: everything shown in the app, plus the document text the tutor searches
+create table if not exists public.study_sets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  file_name text not null default '',
+  summary text not null default '',
+  notes jsonb not null default '[]',
+  flashcards jsonb not null default '[]',
+  quiz jsonb not null default '[]',
+  knowledge jsonb,
+  original_text text not null default '',
+  audio text,
+  pieces jsonb not null default '[]',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists study_sets_user_time on public.study_sets (user_id, created_at desc);
+
+alter table public.study_sets enable row level security;
+
+drop policy if exists "Students read their own study sets" on public.study_sets;
+create policy "Students read their own study sets" on public.study_sets
+  for select to authenticated using ((select auth.uid()) = user_id);
+
+revoke all on public.study_sets from anon;
+revoke insert, update, delete on public.study_sets from authenticated;
+grant select on public.study_sets to authenticated;

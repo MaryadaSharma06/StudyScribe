@@ -30,7 +30,8 @@ const bodiesSentTo = (path) => axios.post.mock.calls.filter(([url]) => url.endsW
 
 // Create React App resets every mock before each test, so the behaviour is set here
 beforeEach(() => {
-  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS } };
+  routes = { '/attempts': { data: NO_PROGRESS }, '/progress': { data: NO_PROGRESS }, '/study-sets': { data: { studySets: [] } } };
+  localStorage.clear();
   axios.defaults = { headers: { common: {} } };
   axios.post.mockImplementation(respond);
   axios.get.mockImplementation(respond);
@@ -289,4 +290,39 @@ test('summary shows AI bold markers as bold text, not symbols', async () => {
   const bold = await screen.findByText('process');
   expect(bold.tagName).toBe('STRONG');
   expect(screen.queryByText(/\*\*/)).not.toBeInTheDocument();
+});
+
+test('a returning student can open a saved study set, and it reopens after a refresh', async () => {
+  routes['/study-sets'] = { data: { studySets: [{ id: 'set-1', fileName: 'networks.pdf', createdAt: '2026-11-19T10:00:00Z' }] } };
+  routes['/study-sets/set-1'] = {
+    data: { docId: 'set-1', fileName: 'networks.pdf', summary: 'Saved summary.', notes: ['n'], flashcards: [], quiz: [], knowledge: null, warnings: [], audio: null },
+  };
+  const { unmount } = await renderSignedIn();
+
+  expect(await screen.findByText('Your study sets')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+
+  // Opens on the summary, with the tools unlocked
+  expect(await screen.findByText('Saved summary.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Quiz' })).toBeEnabled();
+
+  // After a refresh the same set is back, on the dashboard
+  unmount();
+  await renderSignedIn();
+  expect(await screen.findByRole('heading', { name: 'networks.pdf' })).toBeInTheDocument();
+  expect(screen.getByText('Open now')).toBeInTheDocument();
+});
+
+test('a new upload appears in the saved study sets', async () => {
+  routes['/upload'] = { data: { docId: 'set-2', summary: 'S', notes: [], flashcards: [], quiz: [], warnings: [], knowledge: null } };
+  await renderSignedIn();
+  expect(screen.queryByText('Your study sets')).not.toBeInTheDocument();
+
+  routes['/study-sets'] = { data: { studySets: [{ id: 'set-2', fileName: 'chapter.pdf', createdAt: '2026-11-20T10:00:00Z' }] } };
+  uploadFile('chapter.pdf');
+  await screen.findByText('S');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+  expect(await screen.findByText('Your study sets')).toBeInTheDocument();
+  expect(screen.getByText('Open now')).toBeInTheDocument();
 });

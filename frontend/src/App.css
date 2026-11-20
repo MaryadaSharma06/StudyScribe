@@ -189,3 +189,15 @@
 .mastery-bar span { display:block; height:100%; background:var(--level); }
 .mastery-item small { color:var(--muted); font-size:12px; }
 @media (max-width:760px) { .mastery-list { grid-template-columns:1fr; } }
+
+/* Saved study sets */
+.set-list { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.set-item { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--paper); border:1px solid var(--line); }
+.set-item.current { border-left:3px solid var(--coral); }
+.set-item > div { display:grid; flex:1; min-width:0; gap:2px; }
+.set-item strong { overflow:hidden; font-size:14px; text-overflow:ellipsis; white-space:nowrap; }
+.set-item span { color:var(--muted); font-size:12px; }
+.set-item .app-button { padding:7px 14px; font-size:13px; }
+.set-open-now { color:var(--coral-dark)!important; font-family:var(--mono); font-size:10px!important; letter-spacing:.07em; text-transform:uppercase; }
+.set-delete { width:30px; height:30px; flex-shrink:0; color:var(--muted); background:transparent; border:1px solid var(--line); font-size:18px; line-height:1; }
+.set-delete:hover { color:#9b3428; border-color:#efb7ad; background:#fce2dd; }

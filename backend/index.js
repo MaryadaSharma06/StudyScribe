@@ -13,9 +13,12 @@ const { extractSections } = require("./lib/extract");
 const { toPieces, sampleText, buildKnowledgeMap } = require("./lib/understand");
 const { cleanQuiz, cleanFlashcards, conceptNamesOf, questionRules, QUESTION_FORMAT, DIFFICULTIES } = require("./lib/quiz");
 const { nextDifficulty, weakConcepts, analyzeMistakes, practiceQuestions } = require("./lib/assess");
-const { saveDocument, getDocument } = require("./lib/store");
+const { saveDocument, getDocument, forgetDocument } = require("./lib/store");
 const { answerQuestion, LEVELS } = require("./lib/tutor");
-const { userFromToken, saveAttempt, recentAttempts, answerHistory } = require("./lib/db");
+const {
+  userFromToken, saveAttempt, recentAttempts, answerHistory,
+  saveStudySet, listStudySets, getStudySet, studySetPieces, deleteStudySet,
+} = require("./lib/db");
 const { conceptMastery } = require("./lib/mastery");
 
 /* ---------- CONFIG ---------- */
@@ -26,6 +29,9 @@ const MAX_HISTORY_TURNS = 6;     // how many earlier chat messages the tutor is 
 const MAX_TURN_CHARS = 1000;
 const MAX_ANSWERS = 60;          // most quiz answers accepted in one request
 const MAX_SAVED_ANSWERS = 200;   // most answers saved from one quiz attempt
+
+// A trimmed string no longer than `max`, or "" for anything that is not a string
+const short = (value, max) => (typeof value === "string" ? value.trim().slice(0, max) : "");
 
 for (const key of ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]) {
   if (!process.env[key]) {
@@ -228,21 +234,36 @@ ${text}
 
     /* ---------- RESPONSE ---------- */
     const audioUrl = await generateAudio(summaryData.summary);
+    const pieces = toPieces(sections);
 
-    // Keep the whole document so the tutor can search it later
-    const docId = saveDocument(toPieces(sections));
-
-    res.json({
-      docId,
+    const studySet = {
+      fileName: short(req.file.originalname, 200),
       summary: summaryData.summary,
       notes: notesData.notes,
       flashcards,
       quiz,
       knowledge,
+      originalText: text,
       audio: audioUrl,
+    };
+
+    // Save to the student's account; its id is the docId. If saving fails the set still works until a restart.
+    let docId;
+    try {
+      docId = await saveStudySet(req.user.id, { ...studySet, pieces });
+    } catch (saveError) {
+      console.error("Study set not saved:", saveError.message);
+      warnings.push("This study set could not be saved to your account, so it will be lost when you refresh.");
+    }
+
+    // Keep the whole document in memory too, so the tutor can search it without a database call
+    docId = saveDocument(pieces, { id: docId, userId: req.user.id });
+
+    res.json({
+      docId,
+      ...studySet,
       audioError: audioUrl ? null : "The text-to-speech service did not respond.",
       warnings,
-      originalText: text,
     });
 
   } catch (error) {
@@ -302,8 +323,6 @@ ${contentText}
 
 /* ---------- ASSESSMENT ---------- */
 
-const short = (value, max) => (typeof value === "string" ? value.trim().slice(0, max) : "");
-
 // Keeps only well-formed quiz answers from a request.
 function cleanAnswers(list, max) {
   const answers = (Array.isArray(list) ? list : []).slice(0, max).flatMap((item) => {
@@ -332,19 +351,36 @@ function cleanAnswers(list, max) {
   return answers;
 }
 
+/*
+  The document behind a study set, for the student who owns it.
+  Recent documents are in memory; others are loaded from the database,
+  so the tutor keeps working after the server restarts.
+*/
+async function findDocument(docId, userId) {
+  if (typeof docId !== "string" || !docId) return null;
+
+  const cached = getDocument(docId);
+  if (cached) return cached.userId === userId ? cached : null;
+
+  const pieces = await studySetPieces(userId, docId);
+  if (!pieces) return null;
+  saveDocument(pieces, { id: docId, userId });
+  return getDocument(docId);
+}
+
+const MISSING_DOCUMENT = "This study set is no longer available. Please upload the file again.";
+
 // Reads the document and the student's answers from a request.
-function readAssessment(body) {
-  const document = typeof body?.docId === "string" ? getDocument(body.docId) : null;
-  if (!document) {
-    throw new UserError("This document is no longer available on the server. Please upload it again.", 404);
-  }
+async function readAssessment(body, userId) {
+  const document = await findDocument(body?.docId, userId);
+  if (!document) throw new UserError(MISSING_DOCUMENT, 404);
   return { document, answers: cleanAnswers(body.answers, MAX_ANSWERS) };
 }
 
 // Explains each wrong answer and suggests a likely cause
 app.post("/analyze-mistakes", requireUser, async (req, res) => {
   try {
-    const { document, answers } = readAssessment(req.body);
+    const { document, answers } = await readAssessment(req.body, req.user.id);
     const analysis = await analyzeMistakes(document.pieces, answers);
 
     res.json({ analysis, weakConcepts: weakConcepts(answers) });
@@ -357,7 +393,7 @@ app.post("/analyze-mistakes", requireUser, async (req, res) => {
 // Writes new questions on the concepts the student got wrong
 app.post("/practice", requireUser, async (req, res) => {
   try {
-    const { document, answers } = readAssessment(req.body);
+    const { document, answers } = await readAssessment(req.body, req.user.id);
     const concepts = weakConcepts(answers);
 
     if (concepts.length === 0) {
@@ -417,6 +453,40 @@ app.get("/progress", requireUser, async (req, res) => {
   }
 });
 
+/* ---------- SAVED STUDY SETS ---------- */
+
+app.get("/study-sets", requireUser, async (req, res) => {
+  try {
+    res.json({ studySets: await listStudySets(req.user.id) });
+  } catch (error) {
+    sendError(res, error, "Your study sets could not be loaded.");
+  }
+});
+
+// A saved study set in the same shape as the upload response
+app.get("/study-sets/:id", requireUser, async (req, res) => {
+  try {
+    const studySet = await getStudySet(req.user.id, req.params.id);
+    if (!studySet) throw new UserError("This study set was not found. It may have been deleted.", 404);
+    res.json({ ...studySet, warnings: [], audioError: studySet.audio ? null : "There is no audio for this study set." });
+  } catch (error) {
+    sendError(res, error, "This study set could not be opened.");
+  }
+});
+
+// Deletes a study set. Quiz results from it stay, so mastery is not lost.
+app.delete("/study-sets/:id", requireUser, async (req, res) => {
+  try {
+    if (!(await deleteStudySet(req.user.id, req.params.id))) {
+      throw new UserError("This study set was not found. It may have been deleted already.", 404);
+    }
+    forgetDocument(req.params.id);
+    res.json({ deleted: true });
+  } catch (error) {
+    sendError(res, error, "This study set could not be deleted.");
+  }
+});
+
 /* ---------- TUTOR ---------- */
 app.post("/ask", requireUser, async (req, res) => {
   try {
@@ -429,10 +499,8 @@ app.post("/ask", requireUser, async (req, res) => {
       throw new UserError(`Your question is too long. Keep it under ${MAX_QUESTION_CHARS} characters.`);
     }
 
-    const document = typeof docId === "string" ? getDocument(docId) : null;
-    if (!document) {
-      throw new UserError("This document is no longer available on the server. Please upload it again.", 404);
-    }
+    const document = await findDocument(docId, req.user.id);
+    if (!document) throw new UserError(MISSING_DOCUMENT, 404);
 
     // Only well-formed, recent messages are passed on to the AI
     const recentTurns = (Array.isArray(history) ? history : [])

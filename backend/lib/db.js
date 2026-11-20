@@ -93,4 +93,97 @@ async function answerHistory(userId) {
   }));
 }
 
-module.exports = { userFromToken, saveAttempt, recentAttempts, answerHistory };
+/* ---------- STUDY SETS ---------- */
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Saves an uploaded file's study set and returns its id, which the app uses as the docId.
+async function saveStudySet(userId, set) {
+  const { data, error } = await db()
+    .from("study_sets")
+    .insert({
+      user_id: userId,
+      file_name: set.fileName,
+      summary: set.summary,
+      notes: set.notes,
+      flashcards: set.flashcards,
+      quiz: set.quiz,
+      knowledge: set.knowledge,
+      original_text: set.originalText,
+      audio: set.audio,
+      pieces: set.pieces,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+async function listStudySets(userId, limit = 20) {
+  const { data, error } = await db()
+    .from("study_sets")
+    .select("id, file_name, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+
+  return data.map((row) => ({ id: row.id, fileName: row.file_name, createdAt: row.created_at }));
+}
+
+// One study set in the shape the upload route returns, or null if it is not this student's.
+async function getStudySet(userId, id) {
+  if (!UUID.test(id)) return null;
+  const { data, error } = await db()
+    .from("study_sets")
+    .select("id, file_name, summary, notes, flashcards, quiz, knowledge, original_text, audio, created_at")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  return {
+    docId: data.id,
+    fileName: data.file_name,
+    summary: data.summary,
+    notes: data.notes,
+    flashcards: data.flashcards,
+    quiz: data.quiz,
+    knowledge: data.knowledge,
+    originalText: data.original_text,
+    audio: data.audio,
+    createdAt: data.created_at,
+  };
+}
+
+// The document text of a study set, for the tutor and practice questions.
+async function studySetPieces(userId, id) {
+  if (!UUID.test(id)) return null;
+  const { data, error } = await db()
+    .from("study_sets")
+    .select("pieces")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? data.pieces : null;
+}
+
+// Returns true if a study set was deleted. Quiz results from it are kept.
+async function deleteStudySet(userId, id) {
+  if (!UUID.test(id)) return false;
+  const { data, error } = await db()
+    .from("study_sets")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("id");
+  if (error) throw error;
+  return data.length > 0;
+}
+
+module.exports = {
+  userFromToken, saveAttempt, recentAttempts, answerHistory,
+  saveStudySet, listStudySets, getStudySet, studySetPieces, deleteStudySet,
+};

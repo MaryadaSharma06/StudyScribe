@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const { tokenize, search } = require("../lib/retrieve");
 const { answerQuestion } = require("../lib/tutor");
-const { saveDocument, getDocument, MAX_DOCUMENTS } = require("../lib/store");
+const { saveDocument, getDocument, forgetDocument, MAX_DOCUMENTS } = require("../lib/store");
 
 const pieces = [
   { source: "Page 1", text: "A process is a program in execution. Each process has a process control block." },
@@ -93,4 +93,17 @@ test("the document store returns saved documents and forgets the oldest when ful
 
   for (let i = 0; i < MAX_DOCUMENTS; i++) saveDocument(pieces);
   assert.strictEqual(getDocument(first), null);
+});
+
+test("the document store keeps the saved study set's id and owner, and can forget a document", () => {
+  const id = saveDocument(pieces, { id: "set-1", userId: "user-1" });
+  assert.strictEqual(id, "set-1");
+  assert.strictEqual(getDocument("set-1").userId, "user-1");
+
+  // Saving the same id again replaces it rather than adding a second copy
+  saveDocument([], { id: "set-1", userId: "user-1" });
+  assert.deepStrictEqual(getDocument("set-1").pieces, []);
+
+  forgetDocument("set-1");
+  assert.strictEqual(getDocument("set-1"), null);
 });

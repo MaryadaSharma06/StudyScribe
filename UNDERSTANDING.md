@@ -34,7 +34,9 @@ App.js    choose a file  ──────────► POST /upload
                                           tagged with one of those concepts
                                        5. generateAudio() ─────────────────► Google TTS (gtts)
                                           saves an mp3 in backend/uploads
-                                       6. saveDocument(): keep the pieces
+                                       6. saveStudySet() ──────────────────► Supabase database
+                                          everything + the document pieces    (study_sets)
+                                          its id is the docId; also kept
                                           in memory for the tutor
           show 6 tabs    ◄────────── JSON response with a docId
 
@@ -69,7 +71,7 @@ There are two separate programs:
 - **Frontend** in `frontend/`: a React single-page app made with Create React App.
 - **Backend** in `backend/`: one Express server. `index.js` holds the routes and `lib/` holds the logic.
 
-Accounts and quiz results are stored in Supabase (a hosted Postgres database with sign-in built in). Uploaded documents and study sets are still held in the server's memory only.
+Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres database with sign-in built in). The server also keeps recently used documents in memory, so the tutor does not fetch them on every question.
 
 ## 3. Files
 
@@ -80,14 +82,14 @@ Accounts and quiz results are stored in Supabase (a hosted Postgres database wit
 | `backend/lib/understand.js` | Splits text into pieces and batches, samples long documents, and builds the knowledge map |
 | `backend/lib/retrieve.js` | `search()`: ranks the pieces of a document against a question |
 | `backend/lib/tutor.js` | `answerQuestion()`: retrieve, ask the LLM, check the sources |
-| `backend/lib/store.js` | `saveDocument()` and `getDocument()`: documents kept in memory |
-| `backend/lib/db.js` | Supabase: `userFromToken()` checks who is signed in, `saveAttempt()`, `recentAttempts()` and `answerHistory()` |
+| `backend/lib/store.js` | `saveDocument()`, `getDocument()` and `forgetDocument()`: a memory cache of recently used documents and who owns them |
+| `backend/lib/db.js` | Supabase: `userFromToken()` checks who is signed in; saving and reading quiz results and study sets |
 | `backend/lib/mastery.js` | `conceptMastery()`: the student model, worked out from saved answers |
 | `backend/lib/quiz.js` | `cleanQuiz()` and `cleanFlashcards()`, which check AI-written questions and cards, plus the shared question format |
 | `backend/lib/assess.js` | `nextDifficulty()`, `weakConcepts()`, `analyzeMistakes()` and `practiceQuestions()` |
 | `backend/lib/ai.js` | `askGroq()`, the single place that calls the LLM, and `safeParse()` |
 | `backend/lib/errors.js` | `UserError`, for problems the student can fix |
-| `backend/test/` | 43 tests run with Node's built-in test runner (`npm test`) |
+| `backend/test/` | 44 tests run with Node's built-in test runner (`npm test`) |
 | `backend/package.json` | Backend libraries |
 | `backend/.env.example` | Template listing the keys the backend needs |
 | `backend/tmp_*.js` | Four leftover experiment scripts. Not used by the app. Three contain a hardcoded token (see section 7) |
@@ -98,7 +100,7 @@ Accounts and quiz results are stored in Supabase (a hosted Postgres database wit
 | `frontend/src/Auth.js` | Sign-up and sign-in screen |
 | `frontend/src/App.css` | All styling |
 | `frontend/src/index.js` | Starts React |
-| `frontend/src/App.test.js` | Twelve tests covering sign-in, the sign-in token, saved progress, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
+| `frontend/src/App.test.js` | Fourteen tests covering sign-in, the sign-in token, saved progress, saved study sets, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
 | `frontend/.env.example` | Template for the Supabase values and the backend address |
 | `supabase/schema.sql` | The database tables and access rules. Run once in the Supabase SQL Editor |
 | `frontend/README.md` | The default Create React App readme |
@@ -172,7 +174,7 @@ Three details make conversations work:
 
 **Why keyword search instead of embeddings?** Embedding search matches by meaning and is the more common choice for RAG, but it needs an embedding model: either a paid service (the Hugging Face one requires credits) or a large model loaded into the server's memory. BM25 needs neither, is about 40 lines of code, and works well for study questions because students usually ask using the terms in their notes. Its weakness is questions worded very differently from the material.
 
-**Where documents live.** `/upload` stores the document's pieces with `saveDocument()` and returns a `docId`. `backend/lib/store.js` is a plain in-memory `Map` holding the 50 most recent documents. It is emptied when the server restarts, in which case `/ask` returns a 404 telling the student to upload again.
+**Where documents live.** `/upload` saves the study set, including the document's pieces, to the `study_sets` table, and the row's id becomes the `docId`. The pieces are also put in `backend/lib/store.js`, an in-memory `Map` of the 50 most recently used documents with their owner. `findDocument()` in `index.js` looks there first and otherwise loads the pieces from Supabase, so the tutor and practice questions keep working after a server restart. Either way, a student can only use their own documents: another student's `docId` gives a 404.
 
 **Why the tutor uses a different model.** Groq's free plan limits each model to 8,000 tokens per minute. One upload uses most of that on `openai/gpt-oss-120b`, so tutor questions asked straight afterwards had to wait up to 27 seconds. The tutor uses `openai/gpt-oss-20b`, which has its own separate limit, and replies in about one to two seconds.
 
@@ -235,6 +237,14 @@ The two Supabase keys have different jobs:
 
 - The **publishable** key is in the frontend. It is public, and can only do what the database rules allow.
 - The **secret** key is only in `backend/.env`. It ignores the database rules, so every query in `db.js` filters by the signed-in student's id itself.
+
+### Saved study sets
+
+Each upload is saved to the `study_sets` table with everything the app shows (summary, notes, flashcards, quiz, topic map, audio link) and the document pieces. If saving fails, the upload still works for that session, with a warning that it will be lost on refresh.
+
+The dashboard lists the student's saved sets (`GET /study-sets`), newest first, with **Open** (`GET /study-sets/<id>`, which returns the same shape as an upload) and **Delete**. Deleting removes the set but keeps its quiz results, so mastery is not lost.
+
+The browser remembers which set was open last (in `localStorage`, one key per student) and reopens it after a refresh. That is only a convenience: if it fails, the student opens the set from the list.
 
 ### Saved progress and concept mastery
 
@@ -305,7 +315,7 @@ The frontend reads the backend address from `REACT_APP_API_URL` and falls back t
 **Limitations**
 
 1. **Long documents are only partly analysed.** The topic map reads up to about 32,000 characters and reports its coverage. The summary, notes and quiz use a 6,000-character sample. Phase 3 retrieval lets the tutor use the whole file.
-2. **Study sets are not saved.** Accounts and quiz results are saved, but the summary, notes, topics and the document the tutor uses live only in the browser and server memory. Refreshing loses the study set, and a server restart loses the tutor's copy.
+2. **Audio files are not in the database.** Study sets are saved in Supabase, but the audio summary is a file in `backend/uploads`. On a host that wipes its disk on restart (Render's free plan), an older set's audio stops playing. Supabase Storage could hold them instead.
 3. **The knowledge map has had one real-model check.** A two-page test lecture gave 5 topics and 18 concepts with correct page labels. Quality on long or messy documents has not been measured.
 4. **Four to nine AI calls run one after another** on each upload. Test uploads took 33 to 71 seconds, which is slow and can hit free-tier time limits on Render. The model's hidden reasoning counts towards the reply limit, so the knowledge map call uses a higher limit (6,000 tokens) than the others (3,000).
 5. **Audio files pile up** in `backend/uploads` and are never deleted. On Render's free tier they also disappear on restart.

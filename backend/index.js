@@ -22,6 +22,7 @@ const {
 const { conceptMastery } = require("./lib/mastery");
 const { nextSteps, DIFFICULTY_FOR } = require("./lib/orchestrator");
 const { revisionSchedule } = require("./lib/revision");
+const { progressReport } = require("./lib/report");
 
 /* ---------- CONFIG ---------- */
 const MAX_FILE_MB = 25;
@@ -477,6 +478,27 @@ app.get("/progress", requireUser, async (req, res) => {
     res.json(await progressFor(req.user.id));
   } catch (error) {
     sendError(res, error, "Your progress could not be loaded.");
+  }
+});
+
+/* ---------- PROGRESS REPORT ---------- */
+
+const MAX_REPORT_ATTEMPTS = 500;
+
+// A full progress report: overall scores, strong and weak concepts, results by difficulty and by file, and the score trend.
+// `tz` is the browser's getTimezoneOffset(), so study days and streaks follow the student's own calendar.
+app.get("/report", requireUser, async (req, res) => {
+  try {
+    const tz = Number.parseInt(req.query.tz, 10);
+    const [attempts, answers] = await Promise.all([recentAttempts(req.user.id, MAX_REPORT_ATTEMPTS), answerHistory(req.user.id)]);
+    res.json(progressReport({
+      answers,
+      attempts,
+      schedule: revisionSchedule(answers),
+      tzOffset: Number.isFinite(tz) && Math.abs(tz) <= 14 * 60 ? tz : 0,
+    }));
+  } catch (error) {
+    sendError(res, error, "Your progress report could not be made.");
   }
 });
 

@@ -3,6 +3,7 @@ import axios from "axios";
 import "./App.css";
 import Auth from "./Auth";
 import Quiz from "./Quiz";
+import ProgressReport from "./ProgressReport";
 import { API_URL } from "./config";
 import { supabase } from "./supabase";
 
@@ -12,6 +13,7 @@ const SUPPORTED_TYPES = [".pdf", ".pptx", ".docx", ".txt", ".mp3", ".wav", ".m4a
 // Tools in the sidebar. "needsSet" tools only open once a file has been uploaded.
 const VIEWS = [
   { id: "dashboard", label: "Dashboard", icon: "⌂", needsSet: false },
+  { id: "report", label: "Progress report", icon: "▤", needsSet: false },
   { id: "summary", label: "Summary", icon: "¶", needsSet: true, title: "Summary", intro: "A lecture-style explanation of your material, with an audio version." },
   { id: "notes", label: "Notes", icon: "✎", needsSet: true, title: "Notes", intro: "Short notes to skim before a class or exam." },
   { id: "topics", label: "Topics", icon: "◎", needsSet: true, title: "Topic map", intro: "The topics and key concepts in your file, with definitions and where they appear." },
@@ -95,6 +97,9 @@ export default function App() {
   const [practiceRequest, setPracticeRequest] = useState(null);
   const [tutorRequest, setTutorRequest] = useState(null);
   const [revision, setRevision] = useState(null);   // { due: [groups by study set], upcoming }
+  const [report, setReport] = useState(null);       // the progress report, loaded when its page is opened
+  const [reportError, setReportError] = useState(null);
+  const [reportTry, setReportTry] = useState(0);
 
   const [errorMessage, setErrorMessage] = useState(null);
   const [session, setSession] = useState(undefined);   // undefined while checking, null when signed out
@@ -114,6 +119,7 @@ export default function App() {
         setProgress(null);
         setStudySets([]);
         setRevision(null);
+        setReport(null);
         setView("dashboard");
       }
       setSession(next);
@@ -192,6 +198,18 @@ export default function App() {
       .catch(() => current && setRevision(null));
     return () => { current = false; };
   }, [userId, progress]);
+
+  // The report is made fresh each time its page is opened, and again after a new quiz result
+  useEffect(() => {
+    if (!userId || view !== "report") return;
+    let current = true;
+    setReportError(null);
+    axios
+      .get(`${API_URL}/report`, { params: { tz: new Date().getTimezoneOffset() } })
+      .then((res) => current && setReport(res.data))
+      .catch((err) => current && setReportError(err.response?.data?.error || "Your progress report could not be loaded."));
+    return () => { current = false; };
+  }, [userId, view, progress, reportTry]);
 
   // Opens the study set the concepts came from, then starts a practice round on them
   const startRevision = async (group) => {
@@ -536,7 +554,7 @@ export default function App() {
               <section className="panel">
                 <div className="panel-head">
                   <div><span className="section-kicker">Your progress</span><h2>Concept mastery</h2></div>
-                  <span className="result-count">Weakest first</span>
+                  <button className="app-button secondary-button report-link" onClick={() => setView("report")}>See full progress report →</button>
                 </div>
                 <p className="mastery-note">Worked out from every quiz answer you have saved. Recent answers count more, and a concept needs at least three answers before it is judged.</p>
                 <ul className="mastery-list">
@@ -557,6 +575,18 @@ export default function App() {
             )}
 
             {hasSet && uploadBox}
+          </>
+        )}
+
+        {/* PROGRESS REPORT */}
+        {view === "report" && (
+          <>
+            <header className="view-head no-print">
+              <span className="section-kicker">Your progress</span>
+              <h2>Progress report</h2>
+              <p>Your scores, strong and weak points, and how you are improving, from every quiz you have saved.</p>
+            </header>
+            <ProgressReport report={report} error={reportError} email={email} onRetry={() => setReportTry((n) => n + 1)} />
           </>
         )}
 

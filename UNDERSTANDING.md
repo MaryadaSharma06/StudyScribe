@@ -2,7 +2,7 @@
 
 This document explains how StudyScribe works today, in plain language. It describes the code as it actually is, including its weak points, and is updated as each StudyScribe 2.0 phase is completed.
 
-Last updated: 20 November 2026, after Phase 7 (spaced revision).
+Last updated: 21 November 2026, after Phase 7 (spaced revision) and the progress report.
 
 ## 1. What the app does
 
@@ -87,22 +87,24 @@ Accounts, study sets and quiz results are stored in Supabase (a hosted Postgres 
 | `backend/lib/mastery.js` | `conceptMastery()`: the student model, worked out from saved answers |
 | `backend/lib/orchestrator.js` | `nextSteps()`: picks the next best learning actions from mastery |
 | `backend/lib/revision.js` | `revisionSchedule()`: when each concept is due for review |
+| `backend/lib/report.js` | `progressReport()`: the progress report, built from saved attempts and answers |
 | `backend/lib/quiz.js` | `cleanQuiz()` and `cleanFlashcards()`, which check AI-written questions and cards, plus the shared question format |
 | `backend/lib/assess.js` | `nextDifficulty()`, `weakConcepts()`, `analyzeMistakes()` and `practiceQuestions()` |
 | `backend/lib/ai.js` | `askGroq()`, the single place that calls the LLM, and `safeParse()` |
 | `backend/lib/errors.js` | `UserError`, for problems the student can fix |
-| `backend/test/` | 59 tests run with Node's built-in test runner (`npm test`) |
+| `backend/test/` | 66 tests run with Node's built-in test runner (`npm test`) |
 | `backend/package.json` | Backend libraries |
 | `backend/.env.example` | Template listing the keys the backend needs |
 | `backend/tmp_*.js` | Four leftover experiment scripts. Not used by the app. Three contain a hardcoded token (see section 7) |
 | `frontend/src/App.js` | The page layout (sidebar and dashboard), upload box, progress popup, and the `Tutor`, `KnowledgeMap`, `RichText` and `FlipCard` components |
+| `frontend/src/ProgressReport.js` | The progress report page, its score chart and its print layout |
 | `frontend/src/Quiz.js` | The quiz: answering, timer, score, mistake review, practice rounds |
 | `frontend/src/config.js` | The backend address |
 | `frontend/src/supabase.js` | The Supabase client, made from the URL and publishable key |
 | `frontend/src/Auth.js` | Sign-up and sign-in screen |
 | `frontend/src/App.css` | All styling |
 | `frontend/src/index.js` | Starts React |
-| `frontend/src/App.test.js` | Seventeen tests covering sign-in, the sign-in token, saved progress, saved study sets, next steps, revision, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
+| `frontend/src/App.test.js` | Nineteen tests covering sign-in, the sign-in token, saved progress, saved study sets, next steps, revision, the progress report, the dashboard, file checks, the summary, and the Topics, Tutor and Quiz views. Supabase and the backend are replaced by stand-ins |
 | `frontend/.env.example` | Template for the Supabase values and the backend address |
 | `supabase/schema.sql` | The database tables and access rules. Run once in the Supabase SQL Editor |
 | `frontend/README.md` | The default Create React App readme |
@@ -298,6 +300,18 @@ It uses boxes (the Leitner system):
 Due concepts in the open set also feed the next-step rules (priority 3 above), so the dashboard can say "Revise what is due today".
 
 Limits: the intervals are standard starting values, not tuned for each student. A concept answered in two files is scheduled once, under the file it was last practised in.
+
+### Progress report
+
+The **Progress report** page in the sidebar puts everything about a student's progress on one page, like a school report. `progressReport()` in `lib/report.js` builds it from the saved attempts and answers each time, so it always agrees with the dashboard. `GET /report` returns it.
+
+- **Overview:** overall score (unanswered questions count as wrong), questions answered, quizzes and practice rounds, concepts studied, study days and the current streak of days in a row. Days follow the student's own time zone, which the browser sends as `tz`.
+- **Strong points** are mastered concepts, best first. **Weak points** are weak concepts, worst first. **Still learning** lists the ones in between. These use the same mastery levels as the rest of the app.
+- **By difficulty** and **by file**: the share of easy, medium and hard questions answered right, and results for each study set.
+- **Quiz scores:** a bar chart of the last 15 attempts. The trend compares the average of the newer half with the older half: 5 points or more up is "improving", 5 or more down is "slipping", and fewer than 4 attempts is not enough to say.
+- **Summary:** a few plain sentences made by fixed rules from the numbers above (strongest concepts, what to focus on, the trend, revision due, the streak). No AI is involved, so every sentence can be traced back to the numbers.
+
+**Print / Save as PDF** uses the browser's print window; a print stylesheet hides the sidebar and keeps each section on one page.
 
 ## 5. Technologies
 

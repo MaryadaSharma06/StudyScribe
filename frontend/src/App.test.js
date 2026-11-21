@@ -407,3 +407,58 @@ test('revision lists due concepts and Revise opens their study set with a practi
   expect(await screen.findByText(/What is the first packet of a TCP handshake\?/)).toBeInTheDocument();
   expect(bodiesSentTo('/practice-concepts')[0]).toMatchObject({ docId: 'set-5', concepts: [{ name: 'TCP handshake', difficulty: 'hard' }] });
 });
+
+test('the progress report shows scores, strong and weak points, and can be printed', async () => {
+  routes['/report'] = {
+    data: {
+      generatedAt: '2026-11-21T10:00:00Z',
+      overview: { quizzes: 3, practiceRounds: 1, questionsAnswered: 24, correctAnswers: 17, accuracy: 68, conceptsStudied: 3, studyDays: 4, streak: 2, firstActivity: '2026-11-15', lastActivity: '2026-11-21' },
+      levels: { mastered: 1, learning: 1, weak: 1, new: 0 },
+      strengths: [{ name: 'Paging', mastery: 0.86, answers: 6, correct: 6 }],
+      weaknesses: [{ name: 'Deadlock', mastery: 0.25, answers: 5, correct: 1 }],
+      almost: [{ name: 'Thrashing', mastery: 0.6, answers: 4, correct: 3 }],
+      byDifficulty: [
+        { difficulty: 'easy', answers: 8, correct: 7, accuracy: 88 },
+        { difficulty: 'medium', answers: 10, correct: 7, accuracy: 70 },
+        { difficulty: 'hard', answers: 6, correct: 3, accuracy: 50 },
+      ],
+      byFile: [{ docId: 'set-1', fileName: 'os.pdf', answers: 24, correct: 17, accuracy: 71, concepts: 3, lastStudied: '2026-11-21T09:00:00Z' }],
+      timeline: [
+        { id: 'a1', score: 50, practice: false, fileName: 'os.pdf', createdAt: '2026-11-15T09:00:00Z' },
+        { id: 'a2', score: 80, practice: false, fileName: 'os.pdf', createdAt: '2026-11-21T09:00:00Z' },
+      ],
+      trend: { direction: 'unknown', change: null },
+      revision: { due: 1, next: null },
+      remarks: ['You are strongest in Paging.', 'Focus next on Deadlock, where you get most questions wrong.'],
+    },
+  };
+  window.print = jest.fn();
+  await renderSignedIn();
+
+  fireEvent.click(screen.getByRole('button', { name: /progress report/i }));
+
+  expect(await screen.findByText('Study progress report')).toBeInTheDocument();
+  expect(axios.get).toHaveBeenCalledWith(expect.stringMatching(/\/report$/), { params: { tz: expect.any(Number) } });
+  expect(screen.getByText('68%')).toBeInTheDocument();
+  expect(screen.getByText('What you know well').closest('section')).toHaveTextContent('Paging');
+  expect(screen.getByText('What needs more work').closest('section')).toHaveTextContent('Deadlock');
+  expect(screen.getByText('Focus next on Deadlock, where you get most questions wrong.')).toBeInTheDocument();
+  expect(screen.getByRole('img', { name: /scores of your last 2 quizzes: 50%, 80%/i })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /print/i }));
+  expect(window.print).toHaveBeenCalled();
+});
+
+test('the progress report asks for a first quiz when there are no results yet', async () => {
+  routes['/report'] = {
+    data: {
+      generatedAt: '2026-11-21T10:00:00Z',
+      overview: { quizzes: 0, practiceRounds: 0, questionsAnswered: 0, correctAnswers: 0, accuracy: null, conceptsStudied: 0, studyDays: 0, streak: 0, firstActivity: null, lastActivity: null },
+      levels: { mastered: 0, learning: 0, weak: 0, new: 0 }, strengths: [], weaknesses: [], almost: [], byDifficulty: [], byFile: [], timeline: [],
+      trend: { direction: 'unknown', change: null }, revision: { due: 0, next: null }, remarks: [],
+    },
+  };
+  await renderSignedIn();
+  fireEvent.click(screen.getByRole('button', { name: /progress report/i }));
+  expect(await screen.findByText('No results yet')).toBeInTheDocument();
+});
